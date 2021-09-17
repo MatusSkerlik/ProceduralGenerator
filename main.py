@@ -459,10 +459,10 @@ class CaveGenerator(Generator):
         h = self.config.get_height()
 
         valid_area = HorizontalAreaGroup((self.layer.Underground, self.layer.Cavern))
-        regions = []
-        assigments = {}
 
         problem = Problem()
+        assignments = {}
+        regions = []
 
         for i in range(0, count):
             x, y = randint(0, w), randint(valid_area.get_y(), valid_area.get_y() + valid_area.get_height())
@@ -470,53 +470,28 @@ class CaveGenerator(Generator):
             cave_region.generate(randint(size_min, size_max))
             regions.append(cave_region)
 
-            problem.addVariable("x" + str(i), range(0, w))
-            problem.addVariable("y" + str(i), range(valid_area.get_y(), valid_area.get_y() + valid_area.get_height()))
+            problem.addVariable("x" + str(i), range(cave_region.get_width(), w - cave_region.get_width(), 10))
+            problem.addVariable("y" + str(i), range(valid_area.get_y() + cave_region.get_height(),
+                                                    valid_area.get_y() + valid_area.get_height() - cave_region.get_height(),
+                                                    10))
 
-            assigments["x" + str(i)] = int(x + cave_region.get_width() / 2)
-            assigments["y" + str(i)] = int(y + cave_region.get_height() / 2)
+            assignments["x" + str(i)] = int(x + cave_region.get_width() / 2)
+            assignments["y" + str(i)] = int(y + cave_region.get_height() / 2)
 
-            # problem.addVariables([
-            #    "sx" + str(i),
-            #    "ex" + str(i),
-            # ], range(0, w), ),
-            #
-            # problem.addVariables([
-            #    "sy" + str(i),
-            #    "ey" + str(i)
-            # ], range(valid_area.get_y(), valid_area.get_y() + valid_area.get_height()))
-
-            # problem.addConstraint(lambda a, b: a + cave_region.get_width() == b, ["sx" + str(i), "ex" + str(i)])
-            # problem.addConstraint(lambda a, b: a + cave_region.get_height() == b, ["sy" + str(i), "ey" + str(i)])
-
-            # assigments["sx" + str(i)] = x
-            # assigments["sy" + str(i)] = y
-            # assigments["ex" + str(i)] = x + cave_region.get_width()
-            # assigments["ey" + str(i)] = y + cave_region.get_height()
-
-        # def distance_constraint(x0, y0, x1, y1):
-        #    return math.sqrt(((x1 - x0) ** 2) + ((y1 - y0) ** 2)) > 20
-
-        # for i in range(0, count):
-        #    for j in range(i + 1, count):
-        #        if i == j:
-        #            continue
-
-        #        problem.addConstraint(
-        #            FunctionConstraint(distance_constraint), [
-        #                "sx" + str(i),
-        #                "sy" + str(i),
-        #                "sx" + str(j),
-        #                "sy" + str(j)
-        #            ])
+        d = math.sqrt(
+            ((w / math.sqrt((math.sqrt(size_max / (size_max / size_min)) * count))) ** 2) + (
+                    (h / math.sqrt((math.sqrt(size_max / (size_max / size_min)) * count))) ** 2))
+        print(d)
 
         def distance_constraint(x0, y0, x1, y1):
-            return math.sqrt(((x1 - x0) ** 2) + ((y1 - y0) ** 2)) > 70
+            return math.sqrt(((x1 - x0) ** 2) + ((y1 - y0) ** 2)) > d
 
         for i in range(0, count):
             for j in range(i + 1, count):
+
                 if i == j:
                     continue
+
                 problem.addConstraint(
                     FunctionConstraint(distance_constraint), [
                         "x" + str(i),
@@ -525,50 +500,29 @@ class CaveGenerator(Generator):
                         "y" + str(j)
                     ])
 
-        problem.setSolver(MinConflictsSolver(assigments, 100))
+        problem.setSolver(MinConflictsSolver(assignments, 5))
         solution = problem.getSolution()
 
-        # k = 0
-        # i = 0
-        # r key in solution:
-        #  print(i)
-        #  region = regions[i]
-        #  if k == 0:
-        #      value = solution["sx" + str(i)]
-        #      print("sx" + str(i), value)
-        #      region.set_x(value)
-        #  elif k == 1:
-        #      value = solution["sy" + str(i)]
-        #      print("sy" + str(i), value)
-        #      region.set_y(value)
-        #  elif k == 2:
-        #      pass
-        #  else:
-        #      pass
-        #  if k == 3:
-        #      i += 1
-        #      k = 0
-        #  else:
-        #      k += 1
-        #  self.layer.add_region(region)
+        if solution is not None:
+            k = 0
+            i = 0
+            for _ in solution:
+                region = regions[i]
+                if k == 0:
+                    value = solution["x" + str(i)]
+                    region.set_x(value - region.get_width())
+                else:
+                    value = solution["y" + str(i)]
+                    region.set_y(value - region.get_height())
 
-        k = 0
-        i = 0
-        for _ in solution:
-            region = regions[i]
-            if k == 0:
-                value = solution["x" + str(i)]
-                region.set_x(value - region.get_width())
-            else:
-                value = solution["y" + str(i)]
-                region.set_y(value - region.get_height())
-
-            if k == 1:
-                self.layer.add_region(region)
-                i += 1
-                k = 0
-            else:
-                k += 1
+                if k == 1:
+                    self.layer.add_region(region)
+                    i += 1
+                    k = 0
+                else:
+                    k += 1
+        else:
+            raise Exception("No solution was found")
 
 
 # static variables
@@ -590,7 +544,7 @@ class Layer0(Layer):
         self.drawer.draw_rect(self.Underworld)
 
         cave_generator = CaveGenerator(self.config, self)
-        cave_generator.generate(100, 300, 500)
+        cave_generator.generate(500, 50, 200)
 
         # TODO CSP
 
