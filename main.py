@@ -5,7 +5,8 @@ from typing import Tuple
 
 import pygame
 from PIL import Image, ImageDraw
-from ortools.sat.python import cp_model
+
+from csp import MinConflictsSolver, Problem, FunctionConstraint
 
 WIDTH = 1768
 HEIGHT = 765
@@ -37,12 +38,12 @@ class Area(ABC):
     color: Tuple[int, int, int] = (255, 0, 0)
 
     def __init__(self, x, y, w, h):
-        self.x = x
-        self.y = y
-        self.w = w
-        self.h = h
+        self.x = int(x)
+        self.y = int(y)
+        self.w = int(w)
+        self.h = int(h)
 
-    def get_x(self):
+    def get_x(self) -> int:
         return self.x
 
     def set_x(self, x: int):
@@ -51,13 +52,13 @@ class Area(ABC):
     def set_y(self, y: int):
         self.y = y
 
-    def get_y(self):
+    def get_y(self) -> int:
         return self.y
 
-    def get_width(self):
+    def get_width(self) -> int:
         return self.w
 
-    def get_height(self):
+    def get_height(self) -> int:
         return self.h
 
     def get_rect(self):
@@ -458,76 +459,116 @@ class CaveGenerator(Generator):
         h = self.config.get_height()
 
         valid_area = HorizontalAreaGroup((self.layer.Underground, self.layer.Cavern))
-        model = cp_model.CpModel()
-        x_intervals = []
-        y_intervals = []
-        x_starts = []
-        y_starts = []
-        x_ends = []
-        y_ends = []
-
         regions = []
+        assigments = {}
+
+        problem = Problem()
+
         for i in range(0, count):
-            x, y = randint(0, w), randint(0, h)  # TODO, implement cms
-            cave_region = DirtCaveRegion(0, 0, 1, 1)
+            x, y = randint(0, w), randint(valid_area.get_y(), valid_area.get_y() + valid_area.get_height())
+            cave_region = DirtCaveRegion(x, y, 1, 1)
             cave_region.generate(randint(size_min, size_max))
             regions.append(cave_region)
 
-            start_x = model.NewIntVar(0, int(valid_area.get_width()), 'sx_%i' % i)
-            end_x = model.NewIntVar(0, int(valid_area.get_width()), 'ex_%i' % i)
-            start_y = model.NewIntVar(int(valid_area.get_y()), int(valid_area.get_height()), 'sy_%i' % i)
-            end_y = model.NewIntVar(int(valid_area.get_y()), int(valid_area.get_height()), 'ey_%i' % i)
-            interval_x = model.NewIntervalVar(start_x, cave_region.get_width(), end_x, 'ix_%i' % i)
-            interval_y = model.NewIntervalVar(start_y, cave_region.get_height(), end_y, 'iy_%i' % i)
-            x_intervals.append(interval_x)
-            y_intervals.append(interval_y)
-            x_starts.append(start_x)
-            y_starts.append(start_y)
-            x_ends.append(end_x)
-            y_ends.append(end_y)
+            problem.addVariable("x" + str(i), range(0, w))
+            problem.addVariable("y" + str(i), range(valid_area.get_y(), valid_area.get_y() + valid_area.get_height()))
 
-        model.AddNoOverlap2D(x_intervals, y_intervals)
+            assigments["x" + str(i)] = int(x + cave_region.get_width() / 2)
+            assigments["y" + str(i)] = int(y + cave_region.get_height() / 2)
+
+            # problem.addVariables([
+            #    "sx" + str(i),
+            #    "ex" + str(i),
+            # ], range(0, w), ),
+            #
+            # problem.addVariables([
+            #    "sy" + str(i),
+            #    "ey" + str(i)
+            # ], range(valid_area.get_y(), valid_area.get_y() + valid_area.get_height()))
+
+            # problem.addConstraint(lambda a, b: a + cave_region.get_width() == b, ["sx" + str(i), "ex" + str(i)])
+            # problem.addConstraint(lambda a, b: a + cave_region.get_height() == b, ["sy" + str(i), "ey" + str(i)])
+
+            # assigments["sx" + str(i)] = x
+            # assigments["sy" + str(i)] = y
+            # assigments["ex" + str(i)] = x + cave_region.get_width()
+            # assigments["ey" + str(i)] = y + cave_region.get_height()
+
+        # def distance_constraint(x0, y0, x1, y1):
+        #    return math.sqrt(((x1 - x0) ** 2) + ((y1 - y0) ** 2)) > 20
+
+        # for i in range(0, count):
+        #    for j in range(i + 1, count):
+        #        if i == j:
+        #            continue
+
+        #        problem.addConstraint(
+        #            FunctionConstraint(distance_constraint), [
+        #                "sx" + str(i),
+        #                "sy" + str(i),
+        #                "sx" + str(j),
+        #                "sy" + str(j)
+        #            ])
+
+        def distance_constraint(x0, y0, x1, y1):
+            return math.sqrt(((x1 - x0) ** 2) + ((y1 - y0) ** 2)) > 70
 
         for i in range(0, count):
             for j in range(i + 1, count):
-                x0 = x_starts[i]
-                y0 = y_starts[i]
-                x1 = x_ends[i]
-                y1 = y_ends[i]
-                cx0 = x1 - x0
-                cy0 = y1 - y0
+                if i == j:
+                    continue
+                problem.addConstraint(
+                    FunctionConstraint(distance_constraint), [
+                        "x" + str(i),
+                        "y" + str(i),
+                        "x" + str(j),
+                        "y" + str(j)
+                    ])
 
-                x2 = x_starts[j]
-                y2 = y_starts[j]
-                x3 = x_ends[j]
-                y3 = y_ends[j]
-                cx1 = x3 - x2
-                cy1 = y3 - y2
+        problem.setSolver(MinConflictsSolver(assigments, 100))
+        solution = problem.getSolution()
 
-                d0 = cx1 - cx0
-                d1 = cy1 - cy0
+        # k = 0
+        # i = 0
+        # r key in solution:
+        #  print(i)
+        #  region = regions[i]
+        #  if k == 0:
+        #      value = solution["sx" + str(i)]
+        #      print("sx" + str(i), value)
+        #      region.set_x(value)
+        #  elif k == 1:
+        #      value = solution["sy" + str(i)]
+        #      print("sy" + str(i), value)
+        #      region.set_y(value)
+        #  elif k == 2:
+        #      pass
+        #  else:
+        #      pass
+        #  if k == 3:
+        #      i += 1
+        #      k = 0
+        #  else:
+        #      k += 1
+        #  self.layer.add_region(region)
 
-                model.Maximize(math.sqrt(pow(d0, 2) + pow(d1, 2)))
+        k = 0
+        i = 0
+        for _ in solution:
+            region = regions[i]
+            if k == 0:
+                value = solution["x" + str(i)]
+                region.set_x(value - region.get_width())
+            else:
+                value = solution["y" + str(i)]
+                region.set_y(value - region.get_height())
 
-        for i in range(0, count):
-            for j in range(i + 1, count):
-                start0 = y_starts[i]
-                start1 = y_starts[j]
-                model.Add(start1 - start0 > 2)
-
-        solver = cp_model.CpSolver()
-        status = solver.Solve(model)
-
-        if status == cp_model.OPTIMAL:
-            for i in range(0, count):
-                region = regions[i]
-                x, y = int(solver.Value(x_starts[i])), int(solver.Value(y_starts[i]))
-                region.set_x(x)
-                region.set_y(y)
-                print(x, y, region.get_x(), region.get_y())
+            if k == 1:
                 self.layer.add_region(region)
-        else:
-            raise Exception("Cannot be solved")
+                i += 1
+                k = 0
+            else:
+                k += 1
 
 
 # static variables
@@ -549,7 +590,7 @@ class Layer0(Layer):
         self.drawer.draw_rect(self.Underworld)
 
         cave_generator = CaveGenerator(self.config, self)
-        cave_generator.generate(50, 25, 50)
+        cave_generator.generate(100, 300, 500)
 
         # TODO CSP
 
