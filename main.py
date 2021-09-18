@@ -1,15 +1,18 @@
 import math
+import random
+import string
+import time
 from abc import abstractmethod, ABC
-from random import randint
-from typing import Tuple
+from copy import copy
+from typing import Tuple, List, Union
 
 import pygame
 from PIL import Image, ImageDraw
 
 from csp import MinConflictsSolver, Problem, FunctionConstraint
 
-WIDTH = 1768
-HEIGHT = 765
+WIDTH = 800
+HEIGHT = 600
 
 
 ############################### ABCS #####################################
@@ -106,22 +109,21 @@ class HorizontalAreaGroup(Area):
     """ Group of Horizontal Areas """
 
     def __init__(self, areas: Tuple[HorizontalArea, ...]):
-        smallest_y = 0
-        biggest_y = 0
-        initialized = False
+        sy = None
+        by = None
         for area in areas:
-            if not initialized:
-                smallest_y = area.y
-                biggest_y = area.y + area.h
-                initialized = True
-            else:
-                if area.y < smallest_y:
-                    smallest_y = area.y
+            if sy is None:
+                sy = area.y
+            if by is None:
+                by = area.y + area.h
 
-                if area.y + area.h > biggest_y:
-                    biggest_y = area.y + area.h
+            if area.y < sy:
+                sy = area.y
 
-        super(HorizontalAreaGroup, self).__init__(0, smallest_y, WIDTH, biggest_y - smallest_y)
+            if area.y + area.h > by:
+                by = area.y + area.h
+
+        super(HorizontalAreaGroup, self).__init__(0, sy, WIDTH, by - sy)
 
 
 class Block(Area):
@@ -200,6 +202,13 @@ class Region(Generator, Area, ABC):
         self.h = max_y - min_y + 1
 
 
+class RegionGenerator(Generator, ABC):
+
+    @abstractmethod
+    def generate(self, **kwargs) -> Tuple[Region, ...]:
+        pass
+
+
 class Drawer(ABC):
 
     @abstractmethod
@@ -223,6 +232,14 @@ class Drawer(ABC):
         pass
 
     @abstractmethod
+    def draw_progress(self, text: string):
+        pass
+
+    @abstractmethod
+    def draw_polygon(self, points: Tuple[Tuple[int, int], ...], color: Tuple[int, int, int]):
+        pass
+
+    @abstractmethod
     def fill(self, color):
         pass
 
@@ -239,6 +256,8 @@ class PillowDrawer(Drawer):
         return
 
     def free(self):
+        name = ''.join(random.choice(string.ascii_lowercase) for _ in range(10))
+        self.canvas.save("img/" + name + ".jpg")
         self.canvas.show()
 
     def draw_rect(self, area: Area):
@@ -255,6 +274,12 @@ class PillowDrawer(Drawer):
         color = (255, 0, 0)
         self.drawer.rectangle((x, y, x1, y1), fill=None, outline=color)
 
+    def draw_progress(self, text: string):
+        pass
+
+    def draw_polygon(self, points: Tuple[Tuple[int, int], ...], color: Tuple[int, int, int]):
+        pass
+
     def fill(self, color):
         w = self.config.get_width()
         h = self.config.get_height()
@@ -268,21 +293,33 @@ class PygameDrawer(Drawer):
         self.config = config
         self.canvas = None
         self.running = False
+        self._font = None
 
     def _handle_events(self):
         for event in pygame.event.get():
             if event.type == pygame.QUIT or (event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE):
+                pygame.quit()
+                pygame.font.quit()
                 exit(0)
 
     def init(self):
         pygame.init()
+        pygame.font.init()
         w = self.config.get_width()
-        h = self.config.get_height()
+        h = self.config.get_height() + 20
         self.canvas = pygame.display.set_mode([w, h])
+        self._font = pygame.font.Font("font.ttf", 12)
 
     def free(self):
-        pygame.image.save(self.canvas, "screenshot.jpeg")
-        pygame.quit()
+        name = ''.join(random.choice(string.ascii_lowercase) for _ in range(10))
+        pygame.image.save(self.canvas, "img/" + name + ".jpg")
+        while True:
+            time.sleep(0.016)
+            for event in pygame.event.get():
+                if event.type == pygame.QUIT or (event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE):
+                    pygame.quit()
+                    pygame.font.quit()
+                    exit(0)
 
     def draw_rect(self, area: Area):
         x, y, x1, y1 = area.get_rect()
@@ -293,7 +330,12 @@ class PygameDrawer(Drawer):
 
     def draw_region(self, region: Region):
         for block in region.get_blocks():
-            self.draw_rect(block)
+            x, y, x1, y1 = block.get_rect()
+            color = block.get_color()
+            pygame.draw.rect(self.canvas, color, (x, y, x1, y1))
+            self._handle_events()
+        x, y, x1, y1 = region.get_rect()
+        pygame.display.update((x, y, x1, y1))
 
     def draw_outline(self, region: Region):
         x, y, x1, y1 = region.get_rect()
@@ -301,6 +343,46 @@ class PygameDrawer(Drawer):
         pygame.draw.rect(self.canvas, color, (x, y, x1, y1), 1)
         pygame.display.update((x, y, x1, y1))
         self._handle_events()
+
+    def draw_polygon(self, points: Tuple[Tuple[int, int], ...], color: Tuple[int, int, int]):
+        pygame.draw.polygon(self.canvas, color, points)
+
+        sx = None
+        sy = None
+        bx = None
+        by = None
+        for point in points:
+            x, y = point
+            if sx is None:
+                sx = x
+            elif sx > x:
+                sx = x
+
+            if sy is None:
+                sy = y
+            elif sy > y:
+                sy = y
+
+            if bx is None:
+                bx = x
+            elif bx < x:
+                bx = x
+
+            if by is None:
+                by = y
+            elif by < y:
+                by = y
+
+        pygame.display.update((sx, sy, bx - sx, by - sy))
+
+    def draw_progress(self, text: string):
+        w = self.config.get_width()
+        h = self.config.get_height()
+
+        pygame.draw.rect(self.canvas, (0, 128, 128), (0, h, w, h + 64))
+        font = self._font.render(text, False, (255, 255, 255))
+        self.canvas.blit(font, (4, h + 4))
+        pygame.display.update((0, h, w, h))
 
     def fill(self, color):
         # pygame.display.flip()
@@ -327,6 +409,10 @@ class Layer(Generator):
     def remove_region(self, region: Region):
         self._regions.remove(region)
 
+    def extend_regions(self, regions: Union[Tuple[Region, ...], List[Region]]):
+        for region in regions:
+            self.add_region(region)
+
     def get_regions(self):
         return self._regions
 
@@ -352,8 +438,8 @@ class OreRegion(Region, ABC):
                 _ = int(i - i * 0.07)
                 if (i - _) < 10:  # TODO can get stuck here
                     _ = 0
-                current = blocks[randint(_, i)]
-                x0, y0 = sides[randint(0, 3)]
+                current = blocks[random.randint(_, i)]
+                x0, y0 = sides[random.randint(0, 3)]
                 x1 = current.get_x() + x0
                 y1 = current.get_y() + y0
 
@@ -395,8 +481,8 @@ class CaveRegion(Region, ABC):
                 _ = int(i - i * 0.04)
                 if (i - _) < 10:  # TODO can get stuck here
                     _ = 0
-                current = blocks[randint(_, i)]
-                x0, y0 = sides[randint(0, 3)]
+                current = blocks[random.randint(_, i)]
+                x0, y0 = sides[random.randint(0, 3)]
                 x1 = current.get_x() + x0
                 y1 = current.get_y() + y0
 
@@ -447,52 +533,53 @@ class Underworld(HorizontalArea):
         super(Underworld, self).__init__(17 * HEIGHT / 20, HEIGHT)
 
 
-class CaveGenerator(Generator):
-    """ Implements CSP and generates caves """
+############################### CSP ################################################
 
-    def __init__(self, config: Config, layer: Layer):
-        self.config = config
-        self.layer = layer
+class OreDistributionProblem(Problem):
+    """ Will distribute regions so they dont have intersection """
 
-    def generate(self, count: int = 1, size_min: int = 100, size_max: int = 1000):
-        w = self.config.get_width()
-        h = self.config.get_height()
-
-        valid_area = HorizontalAreaGroup((self.layer.Underground, self.layer.Cavern))
-
-        problem = Problem()
+    def __init__(self, area: Area, regions: Tuple[OreRegion, ...], step_size: int = 10):
+        super(Problem, self).__init__()
+        self._constraints = []
+        self._variables = {}
+        self._regions = regions
+        self._area = area
         assignments = {}
-        regions = []
 
-        for i in range(0, count):
-            x, y = randint(0, w), randint(valid_area.get_y(), valid_area.get_y() + valid_area.get_height())
-            cave_region = DirtCaveRegion(x, y, 1, 1)
-            cave_region.generate(randint(size_min, size_max))
-            regions.append(cave_region)
+        # add variables
+        d = 0
+        for i, region in enumerate(regions):
+            x, y, w, h = region.get_x(), region.get_y(), region.get_width(), region.get_height()
+            self.addVariable("x" + str(i),
+                             range(int(region.get_width() / 2), area.get_width() - int(region.get_width() / 2),
+                                   step_size))
+            self.addVariable("y" + str(i), range(area.get_y() + int(region.get_height() / 2),
+                                                 area.get_y() + area.get_height() - int(region.get_height() / 2),
+                                                 step_size))
 
-            problem.addVariable("x" + str(i), range(cave_region.get_width(), w - cave_region.get_width(), 10))
-            problem.addVariable("y" + str(i), range(valid_area.get_y() + cave_region.get_height(),
-                                                    valid_area.get_y() + valid_area.get_height() - cave_region.get_height(),
-                                                    10))
+            assignments["x" + str(i)] = random.randint(int(region.get_width() / 2),
+                                                       area.get_width() - int(region.get_width() / 2))
+            assignments["y" + str(i)] = random.randint(area.get_y() + int(region.get_height() / 2),
+                                                       area.get_y() + area.get_height() - int(region.get_height() / 2))
 
-            assignments["x" + str(i)] = int(x + cave_region.get_width() / 2)
-            assignments["y" + str(i)] = int(y + cave_region.get_height() / 2)
+            if d < w:
+                d = w
+            if d < h:
+                d = h
 
-        d = math.sqrt(
-            ((w / math.sqrt((math.sqrt(size_max / (size_max / size_min)) * count))) ** 2) + (
-                    (h / math.sqrt((math.sqrt(size_max / (size_max / size_min)) * count))) ** 2))
-        print(d)
+        d *= .8
 
+        # add constraints
         def distance_constraint(x0, y0, x1, y1):
             return math.sqrt(((x1 - x0) ** 2) + ((y1 - y0) ** 2)) > d
 
-        for i in range(0, count):
-            for j in range(i + 1, count):
+        for i in range(0, len(regions)):
+            for j in range(i + 1, len(regions)):
 
                 if i == j:
                     continue
 
-                problem.addConstraint(
+                self.addConstraint(
                     FunctionConstraint(distance_constraint), [
                         "x" + str(i),
                         "y" + str(i),
@@ -500,9 +587,11 @@ class CaveGenerator(Generator):
                         "y" + str(j)
                     ])
 
-        problem.setSolver(MinConflictsSolver(assignments, 5))
-        solution = problem.getSolution()
+        self._solver = MinConflictsSolver(assignments)
 
+    def getSolution(self) -> Tuple[Region, ...]:
+        solution = super(OreDistributionProblem, self).getSolution()
+        regions = copy(self._regions)
         if solution is not None:
             k = 0
             i = 0
@@ -510,19 +599,102 @@ class CaveGenerator(Generator):
                 region = regions[i]
                 if k == 0:
                     value = solution["x" + str(i)]
-                    region.set_x(value - region.get_width())
+                    region.set_x(value - int(region.get_width() / 2))
                 else:
                     value = solution["y" + str(i)]
-                    region.set_y(value - region.get_height())
-
+                    region.set_y(value - int(region.get_height() / 2))
                 if k == 1:
-                    self.layer.add_region(region)
                     i += 1
                     k = 0
                 else:
                     k += 1
+            return regions
         else:
             raise Exception("No solution was found")
+
+
+############################## NOISE ###############################################
+
+class NonConstantPerlin1D(tuple):
+
+    def __new__(cls, points: int = 10):
+        activations = [random.randint(0, 1) for _ in range(points)]
+
+        # clear multiple ones
+        one = True
+        for i, bit in enumerate(activations):
+            if one and bit:
+                activations[i] = 0
+                continue
+
+            one = bit
+        gradients = [random.random() if bit else 0 for bit in activations]
+        return tuple.__new__(NonConstantPerlin1D, gradients)
+
+
+############################## GENERATORS #########################################
+def clamp(x: float, lowerlimit: float, upperlimit: float) -> float:
+    if x < lowerlimit:
+        return lowerlimit
+    elif x > upperlimit:
+        return upperlimit
+    else:
+        return x
+
+
+def smoothstep(edge0: float, edge1: float, x: float) -> float:
+    x = clamp((x - edge0) / (edge1 - edge0), 0.0, 1.0)
+    return (3 * x ** 2) - (2 * x ** 3)
+
+
+def lerp(v0: float, v1: float, t: float) -> float:
+    return v0 + t * (v1 - v0)
+
+
+class SurfaceGenerator(RegionGenerator):
+    """ Implements CSP and generates caves """
+
+    def __init__(self, config: Config, layer: Layer):
+        self.config = config
+        self.layer = layer
+
+    def generate(self, fq: int):
+        area = HorizontalAreaGroup((self.layer.Surface,))
+        x, y = area.get_x(), area.get_y()
+        w, h = area.get_width(), area.get_height()
+
+        noise = NonConstantPerlin1D(fq)
+        points = [(0, y + h + 1)]
+        b_eval = (y + h) - (h / 4)
+        for _x, _y in enumerate(noise):
+            if _y > 0:
+                b_eval = (y + h) - (h / 4) - (_y * h * .5)
+            points.append((_x * w / fq, b_eval))
+
+        points.append((w, (y + h) - (h / 4)))
+        points.append((w, y + h + 1))
+
+        return points
+
+
+class CaveGenerator(RegionGenerator):
+    """ Implements CSP and generates caves """
+
+    def __init__(self, config: Config, layer: Layer):
+        self.config = config
+        self.layer = layer
+
+    def generate(self, count: int = 1, size_min: int = 100, size_max: int = 1000):
+        area = HorizontalAreaGroup((self.layer.Underground, self.layer.Cavern))
+        regions = []
+
+        for i in range(0, count):
+            cave_region = DirtCaveRegion(0, 0, 1, 1)
+            cave_region.generate(random.randint(size_min, size_max))
+            regions.append(cave_region)
+
+        problem = OreDistributionProblem(area, regions)
+        return problem.getSolution()
 
 
 # static variables
@@ -536,6 +708,8 @@ setattr(Layer, "Underworld", Underworld())
 class Layer0(Layer):
 
     def generate(self):
+        self.drawer.draw_progress("Generating Layer0 ...")
+
         self.drawer.fill((0, 0, 0))
         self.drawer.draw_rect(self.Space)
         self.drawer.draw_rect(self.Surface)
@@ -543,13 +717,34 @@ class Layer0(Layer):
         self.drawer.draw_rect(self.Cavern)
         self.drawer.draw_rect(self.Underworld)
 
+        self.drawer.draw_progress("Generating caves ...")
         cave_generator = CaveGenerator(self.config, self)
-        cave_generator.generate(500, 50, 200)
+        regions = cave_generator.generate(100, 10, 50)
+        self.extend_regions(regions)
+        self.drawer.draw_progress("Done ...")
 
         # TODO CSP
 
     def add_region(self, region: Region):
         super(Layer0, self).add_region(region)
+        self.drawer.draw_region(region)
+        self.drawer.draw_outline(region)
+
+
+class Layer1(Layer):
+
+    def generate(self):
+        self.drawer.draw_progress("Generating Layer1 ...")
+        self.drawer.draw_progress("Generating surface ...")
+        surface_generator = SurfaceGenerator(self.config, self)
+        points = surface_generator.generate(40)
+        self.drawer.draw_polygon(points, (150, 107, 76))
+        self.drawer.draw_progress("Done ...")
+
+        # TODO CSP
+
+    def add_region(self, region: Region):
+        super(Layer1, self).add_region(region)
         self.drawer.draw_region(region)
         self.drawer.draw_outline(region)
 
@@ -561,5 +756,7 @@ if __name__ == '__main__':
 
     layer0 = Layer0(draw, cfg)
     layer0.generate()
+    layer1 = Layer1(draw, cfg)
+    layer1.generate()
 
     draw.free()

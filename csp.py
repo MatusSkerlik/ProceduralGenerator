@@ -682,17 +682,17 @@ class MinConflictsSolver(Solver):
     NotImplementedError: MinConflictsSolver doesn't provide iteration
     """
 
-    def __init__(self, assigments: dict, steps=1000):
+    def __init__(self, assignments: dict, steps=1000):
         """
         @param steps: Maximum number of steps to perform before giving up
                       when looking for a solution (default is 1000)
         @type  steps: int
         """
         self._steps = steps
-        self._assigments = assigments
+        self._assignments = assignments
 
     def getSolution(self, domains, constraints, vconstraints):
-        assignments = self._assigments
+        assignments = self._assignments
         # Initial assignment
         # for variable in domains:
         #    assignments[variable] = random.choice(domains[variable])
