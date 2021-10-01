@@ -30,6 +30,10 @@ class Config(dict):
         self['LOWLAND_LEVEL1_COUNT'] = 2
         self['LOWLAND_LEVEL2_COUNT'] = 1
         self['LOWLAND_LEVEL3_COUNT'] = 1
+        self['DEBUG'] = True
+
+    def is_debug(self):
+        return self['DEBUG']
 
     def get_width(self):
         return self['WORLD_WIDTH']
@@ -67,6 +71,7 @@ class Color(Enum):
     BACKGROUND_CAVERN = (127, 127, 127)
     BACKGROUND_UNDERWORLD = (0, 0, 0)
 
+    GRASS = (60, 189, 90)
     STONE = (53, 53, 62)
     DIRT = (88, 63, 50)
     MUD = (94, 68, 71)
@@ -266,7 +271,6 @@ class ForestPixelMapping(Area):
         Material.BASE: Color.DIRT,
         Material.SECONDARY: Color.STONE,
         Material.TERTIARY: Color.MUD,
-
         Material.MATERIAL3: Color.IRON,
         Material.MATERIAL4: Color.SILVER,
         Material.MATERIAL5: Color.GOLD
@@ -935,7 +939,7 @@ class LevelNoise(tuple):
             return tuple(ys)
 
         result0 = generate_levels(.1, .1, 1)
-        result1 = interval_transform(result0, 0.75, 0.85)
+        result1 = interval_transform(result0, 0.15, 0.35)
         result2 = interpolation_transform(result1)
         return tuple.__new__(NonConstantPerlin1D, (result0, result1, result2))
 
@@ -946,7 +950,7 @@ class SurfaceGenerator(RegionGenerator):
     def __init__(self, config: Config):
         self.config = config
 
-    def generate(self):  # TODO return regions of hills
+    def generate(self):
         area = HorizontalAreaGroup((HorizontalAreas.Surface,))
         x, y = area.get_x(), area.get_y()
         w, h = area.get_width(), area.get_height()
@@ -1006,6 +1010,8 @@ class MainScene(Scene):
     def draw_regions(self, regions: Tuple[Region, ...]):
         for region in regions:
             self.drawer.draw_region(region)
+            if self.config.is_debug():
+                self.drawer.draw_outline(region)
 
     def play(self):
         self.drawer.init()
@@ -1017,6 +1023,13 @@ class MainScene(Scene):
         self.drawer.draw_area(HorizontalAreas.Underground)
         self.drawer.draw_area(HorizontalAreas.Cavern)
         self.drawer.draw_area(HorizontalAreas.Underworld)
+
+        if self.config.is_debug():
+            self.drawer.draw_outline(HorizontalAreas.Space)
+            self.drawer.draw_outline(HorizontalAreas.Surface)
+            self.drawer.draw_outline(HorizontalAreas.Underground)
+            self.drawer.draw_outline(HorizontalAreas.Cavern)
+            self.drawer.draw_outline(HorizontalAreas.Underworld)
 
         self.drawer.draw_progress("Generating caves ...")
         cave_generator = CaveGenerator(self.config)
