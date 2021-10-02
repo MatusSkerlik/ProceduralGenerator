@@ -485,29 +485,71 @@ class OreRegion(Region):
 
 class CaveRegion(Region):
 
-    def generate(self, count: int = 100):
-        """ Generates caves """
-        if count > 0:
-            i = 0
-            coords = {}
-            pixels = [[self.x, self.y]]
-            sides = [(0, -1), (1, 0), (0, 1), (-1, 0)]
-            while i < count:
-                # TODO should be more deterministic
-                _ = int(i - i * 0.6)
-                if (i - _) < 10:  # TODO can get stuck here
-                    _ = 0
-                current = pixels[random.randint(_, i)]
-                x0, y0 = sides[random.randint(0, 3)]
-                x1 = current[0] + x0
-                y1 = current[1] + y0
+    def generate(self, death_limit: int = 3, birth_limit: int = 4, simulation_steps: int = 3,
+                 birth_chance: float = .47):
+        """
+        Generates caves
+        :param death_limit: is the number of dead neighbours that cause a alive cell to become dead
+        :param birth_limit: is the number of alive neighbours that cause a dead cell to become alive
+        :param simulation_steps: is the number of times we perform the simulation step
+        :param birth_chance: chance that cell is initialized as alive
+        """
 
-                if not coords.get((x1, y1), False):
-                    coords[(x1, y1)] = True
-                    pixels.append([x1, y1])
-                    i += 1
-            self.pixels.extend(pixels)
-            self.update_dimensions()
+        def transform_coords(x, y):
+            return y * self.w + x
+
+        def count_alive_neighbours(x: int, y: int, grid: List[bool]):
+            alive = 0
+            if x > 0:
+                if y > 0:
+                    if grid[transform_coords(x - 1, y - 1)]:
+                        alive += 1
+                if grid[transform_coords(x - 1, y)]:
+                    alive += 1
+                if y < self.h - 1:
+                    if grid[transform_coords(x - 1, y + 1)]:
+                        alive += 1
+            if y > 0:
+                if grid[transform_coords(x, y - 1)]:
+                    alive += 1
+            if y < self.h - 1:
+                if grid[transform_coords(x, y + 1)]:
+                    alive += 1
+            if x < self.w - 1:
+                if y > 0:
+                    if grid[transform_coords(x + 1, y - 1)]:
+                        alive += 1
+                if grid[transform_coords(x + 1, y)]:
+                    alive += 1
+                if y < self.h - 1:
+                    if grid[transform_coords(x + 1, y + 1)]:
+                        alive += 1
+            return alive
+
+        grid: List[bool] = [True if random.random() > birth_chance else False for _ in range(self.w * self.h)]
+        for step in range(simulation_steps):
+            new_grid = [False for _ in range(self.w * self.h)]
+
+            for x in range(self.w):
+                for y in range(self.h):
+                    alive = count_alive_neighbours(x, y, grid)
+
+                    if alive < death_limit:
+                        new_grid[transform_coords(x, y)] = False
+                    else:
+                        new_grid[transform_coords(x, y)] = True
+                    if alive > birth_limit:
+                        new_grid[transform_coords(x, y)] = True
+                    else:
+                        new_grid[transform_coords(x, y)] = False
+
+            grid = new_grid
+
+        # add alive pixels into self
+        for x in range(self.w):
+            for y in range(self.h):
+                if grid[transform_coords(x, y)]:
+                    self.pixels.append([x, y])
 
 
 class SurfaceRegion(Region):
@@ -665,10 +707,12 @@ class PygameDrawer(Drawer):
     def draw_region(self, region: Region):
         material = region.get_material()
         for pixel in region.get_pixels():
-            x, y = pixel
-            color = PixelMapping.get_pixel_mapping(x, y)[material].value  # TODO handler
-            pygame.draw.rect(self.canvas, color, (x, y, 1, 1))
-
+            try:
+                x, y = pixel
+                color = PixelMapping.get_pixel_mapping(x, y)[material].value  # TODO handler
+                pygame.draw.rect(self.canvas, color, (x, y, 1, 1))
+            except Exception:
+                pass
         self._handle_events()
         x, y, x1, y1 = region.get_rect()
         pygame.display.update((x, y, x1, y1))
@@ -939,7 +983,7 @@ class LevelNoise(tuple):
             return tuple(ys)
 
         result0 = generate_levels(.1, .1, 1)
-        result1 = interval_transform(result0, 0.15, 0.35)
+        result1 = interval_transform(result0, 0.55, 0.86)
         result2 = interpolation_transform(result1)
         return tuple.__new__(NonConstantPerlin1D, (result0, result1, result2))
 
@@ -969,7 +1013,7 @@ class SurfaceGenerator(RegionGenerator):
         return regions
 
 
-class CaveGenerator(RegionGenerator):
+class OreGenerator(RegionGenerator):
     """ Implements CSP and generates caves """
 
     def __init__(self, config: Config):
@@ -980,12 +1024,27 @@ class CaveGenerator(RegionGenerator):
         regions = []
 
         for i in range(0, count):
-            cave_region = CaveRegion(0, 0, 1, 1, Material.BASE)
-            cave_region.generate(random.randint(size_min, size_max))
-            regions.append(cave_region)
+            ore_region = OreRegion(0, 0, 1, 1, Material.SECONDARY)
+            ore_region.generate(random.randint(size_min, size_max))
+            regions.append(ore_region)
 
         problem = OreDistributionProblem(area, regions)
         return problem.getSolution()
+
+
+class CaveGenerator(RegionGenerator):
+    """ Implements CSP and generates caves """
+
+    def __init__(self, config: Config):
+        self.config = config
+
+    def generate(self):
+        area = HorizontalAreaGroup((HorizontalAreas.Underground, HorizontalAreas.Cavern))
+        cave_region = CaveRegion(0, 0, area.get_width(), area.get_height(), Material.BASE)
+        cave_region.generate(4, 5, 6, .245)
+        cave_region.set_x(area.get_x())
+        cave_region.set_y(area.get_y())
+        return (cave_region,)
 
 
 class Scene(ABC):
@@ -1033,12 +1092,12 @@ class MainScene(Scene):
 
         self.drawer.draw_progress("Generating caves ...")
         cave_generator = CaveGenerator(self.config)
-        regions = cave_generator.generate(50, 500, 2000)
+        regions = cave_generator.generate()
         self.draw_regions(regions)
 
         self.drawer.draw_progress("Generating ores ...")
-        ore_generator = CaveGenerator(self.config)
-        regions = ore_generator.generate(250, 10, 50)
+        ore_generator = OreGenerator(self.config)
+        regions = ore_generator.generate(250, 10, 30)
         self.draw_regions(regions)
 
         self.drawer.draw_progress("Generating surface ...")
