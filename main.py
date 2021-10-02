@@ -30,7 +30,7 @@ class Config(dict):
         self['LOWLAND_LEVEL1_COUNT'] = 2
         self['LOWLAND_LEVEL2_COUNT'] = 1
         self['LOWLAND_LEVEL3_COUNT'] = 1
-        self['DEBUG'] = True
+        self['DEBUG'] = False
 
     def is_debug(self):
         return self['DEBUG']
@@ -456,6 +456,14 @@ class Region(Rectangle, Generator, ABC):
         self.h = max_y - min_y + 1
 
 
+class CaveRegion(Region):
+
+    def generate(self, pixels: List[Tuple[int, int]]):
+        for pixel in pixels:
+            x, y = pixel
+            self.pixels.append([x, y])
+
+
 class OreRegion(Region):
 
     def generate(self, count: int = 100):
@@ -481,75 +489,6 @@ class OreRegion(Region):
                     i += 1
             self.pixels.extend(pixels)
             self.update_dimensions()
-
-
-class CaveRegion(Region):
-
-    def generate(self, death_limit: int = 3, birth_limit: int = 4, simulation_steps: int = 3,
-                 birth_chance: float = .47):
-        """
-        Generates caves
-        :param death_limit: is the number of dead neighbours that cause a alive cell to become dead
-        :param birth_limit: is the number of alive neighbours that cause a dead cell to become alive
-        :param simulation_steps: is the number of times we perform the simulation step
-        :param birth_chance: chance that cell is initialized as alive
-        """
-
-        def transform_coords(x, y):
-            return y * self.w + x
-
-        def count_alive_neighbours(x: int, y: int, grid: List[bool]):
-            alive = 0
-            if x > 0:
-                if y > 0:
-                    if grid[transform_coords(x - 1, y - 1)]:
-                        alive += 1
-                if grid[transform_coords(x - 1, y)]:
-                    alive += 1
-                if y < self.h - 1:
-                    if grid[transform_coords(x - 1, y + 1)]:
-                        alive += 1
-            if y > 0:
-                if grid[transform_coords(x, y - 1)]:
-                    alive += 1
-            if y < self.h - 1:
-                if grid[transform_coords(x, y + 1)]:
-                    alive += 1
-            if x < self.w - 1:
-                if y > 0:
-                    if grid[transform_coords(x + 1, y - 1)]:
-                        alive += 1
-                if grid[transform_coords(x + 1, y)]:
-                    alive += 1
-                if y < self.h - 1:
-                    if grid[transform_coords(x + 1, y + 1)]:
-                        alive += 1
-            return alive
-
-        grid: List[bool] = [True if random.random() > birth_chance else False for _ in range(self.w * self.h)]
-        for step in range(simulation_steps):
-            new_grid = [False for _ in range(self.w * self.h)]
-
-            for x in range(self.w):
-                for y in range(self.h):
-                    alive = count_alive_neighbours(x, y, grid)
-
-                    if alive < death_limit:
-                        new_grid[transform_coords(x, y)] = False
-                    else:
-                        new_grid[transform_coords(x, y)] = True
-                    if alive > birth_limit:
-                        new_grid[transform_coords(x, y)] = True
-                    else:
-                        new_grid[transform_coords(x, y)] = False
-
-            grid = new_grid
-
-        # add alive pixels into self
-        for x in range(self.w):
-            for y in range(self.h):
-                if grid[transform_coords(x, y)]:
-                    self.pixels.append([x, y])
 
 
 class SurfaceRegion(Region):
@@ -781,7 +720,7 @@ class OreDistributionProblem(Problem):
         assignments = {}
 
         # add variables
-        d = 0
+        sizes = []
         for i, region in enumerate(regions):
             x, y, w, h = region.get_x(), region.get_y(), region.get_width(), region.get_height()
             self.addVariable("x" + str(i),
@@ -795,13 +734,9 @@ class OreDistributionProblem(Problem):
                                                        area.get_width() - int(region.get_width() / 2))
             assignments["y" + str(i)] = random.randint(area.get_y() + int(region.get_height() / 2),
                                                        area.get_y() + area.get_height() - int(region.get_height() / 2))
+            sizes.append(h if h > w else w)
 
-            if d < w:
-                d = w
-            if d < h:
-                d = h
-
-        d *= .8
+        d = sum(sizes) / len(sizes)
 
         # add constraints
         def distance_constraint(x0, y0, x1, y1):
@@ -1028,6 +963,11 @@ class OreGenerator(RegionGenerator):
             ore_region.generate(random.randint(size_min, size_max))
             regions.append(ore_region)
 
+        for i in range(0, int(count / 2)):
+            ore_region = OreRegion(0, 0, 1, 1, Material.TERTIARY)
+            ore_region.generate(random.randint(size_min, size_max))
+            regions.append(ore_region)
+
         problem = OreDistributionProblem(area, regions)
         return problem.getSolution()
 
@@ -1038,13 +978,132 @@ class CaveGenerator(RegionGenerator):
     def __init__(self, config: Config):
         self.config = config
 
-    def generate(self):
+    def generate(self, death_limit: int = 3, birth_limit: int = 4, simulation_steps: int = 3,
+                 birth_chance: float = .47, cave_size_min: int = 175):
+        """
+        Generates caves
+        :param death_limit: is the number of dead neighbours that cause a alive cell to become dead
+        :param birth_limit: is the number of alive neighbours that cause a dead cell to become alive
+        :param simulation_steps: is the number of times we perform the simulation step
+        :param birth_chance: chance that cell is initialized as alive
+        :param cave_size_min: min size of cave
+        """
+
+        def flood_fill(x: int, y: int, grid: List[bool], visited: Dict[Tuple[int, int], bool]) \
+                -> Tuple[List[Tuple[int, int]], List[Tuple[int, int]]]:
+            """
+            Start flood fill from specific pixel and returns tuple of visited (alive, dead) elements
+            :param x: x coordinate
+            :param y: y coordinate
+            :param grid: 1D grid array of elements
+            :param visited: dictionary of visited elements
+            """
+
+            queue: List[Tuple[int, int]] = [(x, y)]
+            alive: Dict[Tuple[int, int], bool] = {}
+            dead: Dict[Tuple[int, int], bool] = {}
+            while len(queue) > 0:
+                coords = queue.pop()
+
+                if coords not in visited:
+                    x0, y0 = coords
+                    current = grid[transform_coords(x0, y0)]
+                    # only traverse if cell is alive
+                    # fuck dead cells
+                    # yeah
+                    visited[coords] = current
+                    if current is True:
+                        alive[coords] = True
+
+                        if x0 > 0:
+                            queue.append((x0 - 1, y0))
+                        if x0 < w - 1:
+                            queue.append((x0 + 1, y0))
+                        if y0 > 0:
+                            queue.append((x0, y0 - 1))
+                        if y0 < h - 1:
+                            queue.append((x0, y0 + 1))
+                    else:
+                        dead[coords] = False
+            return list(alive.keys()), list(dead.keys())
+
+        def transform_coords(x, y):
+            """ :returns 1D array index """
+            return y * w + x
+
+        def count_alive_neighbours(x: int, y: int, grid: List[bool]):
+            """ :returns number of alive neighbours  """
+            alive = 0
+            if x > 0:
+                if y > 0:
+                    if grid[transform_coords(x - 1, y - 1)]:
+                        alive += 1
+                if grid[transform_coords(x - 1, y)]:
+                    alive += 1
+                if y < h - 1:
+                    if grid[transform_coords(x - 1, y + 1)]:
+                        alive += 1
+            if y > 0:
+                if grid[transform_coords(x, y - 1)]:
+                    alive += 1
+            if y < h - 1:
+                if grid[transform_coords(x, y + 1)]:
+                    alive += 1
+            if x < w - 1:
+                if y > 0:
+                    if grid[transform_coords(x + 1, y - 1)]:
+                        alive += 1
+                if grid[transform_coords(x + 1, y)]:
+                    alive += 1
+                if y < h - 1:
+                    if grid[transform_coords(x + 1, y + 1)]:
+                        alive += 1
+            return alive
+
         area = HorizontalAreaGroup((HorizontalAreas.Underground, HorizontalAreas.Cavern))
-        cave_region = CaveRegion(0, 0, area.get_width(), area.get_height(), Material.BASE)
-        cave_region.generate(4, 5, 6, .245)
-        cave_region.set_x(area.get_x())
-        cave_region.set_y(area.get_y())
-        return (cave_region,)
+        w = area.get_width()
+        h = area.get_height()
+        grid: List[bool] = [True if random.random() > birth_chance else False for _ in range(w * h)]
+
+        for step in range(simulation_steps):
+            new_grid = [False for _ in range(w * h)]
+
+            for x in range(w):
+                for y in range(h):
+                    alive = count_alive_neighbours(x, y, grid)
+
+                    if alive < death_limit:
+                        new_grid[transform_coords(x, y)] = False
+                    else:
+                        new_grid[transform_coords(x, y)] = True
+                    if alive > birth_limit:
+                        new_grid[transform_coords(x, y)] = True
+                    else:
+                        new_grid[transform_coords(x, y)] = False
+
+            grid = new_grid
+
+        # remove small caves using flood fill
+        regions = []
+        visited: Dict[Tuple[int, int], bool] = {}
+        for x in range(w):
+            for y in range(h):
+                coords = (x, y)
+                if coords not in visited:
+                    alive, dead = flood_fill(x, y, grid, visited)
+                    # if there are less alive cells than 30, remove them
+                    if len(alive) < cave_size_min:  # TODO parametrize
+                        for coord in alive:
+                            x0, y0 = coord
+                            grid[transform_coords(x0, y0)] = False
+                    else:
+                        cave_region = CaveRegion(0, 0, 1, 1, Material.BASE)
+                        cave_region.generate(alive)
+                        cave_region.update_dimensions()
+                        regions.append(cave_region)
+
+        problem = OreDistributionProblem(area, regions)
+        return problem.getSolution()
 
 
 class Scene(ABC):
@@ -1090,19 +1149,19 @@ class MainScene(Scene):
             self.drawer.draw_outline(HorizontalAreas.Cavern)
             self.drawer.draw_outline(HorizontalAreas.Underworld)
 
+        self.drawer.draw_progress("Generating surface ...")
+        surface_generator = SurfaceGenerator(self.config)
+        regions = surface_generator.generate()
+        self.draw_regions(regions)
+
         self.drawer.draw_progress("Generating caves ...")
         cave_generator = CaveGenerator(self.config)
-        regions = cave_generator.generate()
+        regions = cave_generator.generate(3, 4, 9, .43, 175)
         self.draw_regions(regions)
 
         self.drawer.draw_progress("Generating ores ...")
         ore_generator = OreGenerator(self.config)
         regions = ore_generator.generate(250, 10, 30)
-        self.draw_regions(regions)
-
-        self.drawer.draw_progress("Generating surface ...")
-        surface_generator = SurfaceGenerator(self.config)
-        regions = surface_generator.generate()
         self.draw_regions(regions)
 
         self.drawer.draw_progress("Done ...")
