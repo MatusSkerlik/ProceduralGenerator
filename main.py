@@ -426,6 +426,37 @@ class Region(Rectangle, Generator, ABC):
             pixel[1] = (pixel[1] - self.y + y)
         super().set_y(y)
 
+    def scale(self, scale_x: float, scale_y: float):
+        pixels = dict()
+        for x, y in self.pixels:
+            pixels[(x, y)] = True
+        self.pixels = []
+        w = int(self.w * scale_x)
+        h = int(self.h * scale_y)
+
+        for x in range(w):
+            for y in range(h):
+
+                x1 = min(int(math.floor(x / scale_x)), w - 1)
+                y1 = min(int(math.floor(y / scale_y)), h - 1)
+                x2 = min(int(math.ceil(x / scale_x)), w - 1)
+                y2 = min(int(math.ceil(y / scale_y)), h - 1)
+
+                Q11 = 1 if (self.x + x1, self.y + y1) in pixels else 0
+                Q12 = 1 if (self.x + x1, self.y + y2) in pixels else 0
+                Q21 = 1 if (self.x + x2, self.y + y1) in pixels else 0
+                Q22 = 1 if (self.x + x2, self.y + y2) in pixels else 0
+
+                P1 = .5 if Q11 != Q21 else 1 if Q11 == Q12 == 1 else 0
+                P2 = .5 if Q12 != Q22 else 1 if Q12 == Q21 == 1 else 0
+                P = max(P1, P2)
+
+                if P >= .5:
+                    self.pixels.append([self.x + x, self.y + y])
+
+        self.w = w
+        self.h = h
+
     def update_dimensions(self):
         min_x = 0
         min_y = 0
@@ -844,7 +875,7 @@ class LevelNoise(tuple):
                     zero_pair = (0, max_level_width - count)
                     inner_levels.append(zero_pair)
 
-            return ((0, int(left_offset * w)),) + tuple(inner_levels) + ((0, int(right_offset * w)),)
+            return ((0, int(left_offset * w)),) + tuple(inner_levels) + ((0, int(w - (1 - offset) * w)),)
 
         def level_transform(level: int) -> float:
             if level == 0:
@@ -1103,7 +1134,11 @@ class CaveGenerator(RegionGenerator):
                         regions.append(cave_region)
 
         problem = OreDistributionProblem(area, regions)
-        return problem.getSolution()
+        regions = problem.getSolution()
+
+        for region in regions:
+            region.scale(1.5, 1.5)
+        return regions
 
 
 class Scene(ABC):
@@ -1156,7 +1191,7 @@ class MainScene(Scene):
 
         self.drawer.draw_progress("Generating caves ...")
         cave_generator = CaveGenerator(self.config)
-        regions = cave_generator.generate(3, 4, 9, .43, 175)
+        regions = cave_generator.generate(3, 4, 8, .43, 175)
         self.draw_regions(regions)
 
         self.drawer.draw_progress("Generating ores ...")
