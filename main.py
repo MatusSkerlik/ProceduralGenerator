@@ -4,13 +4,13 @@ import string
 import time
 from abc import abstractmethod, ABC
 from collections import ChainMap
-from copy import copy
-from enum import Enum, auto
 from typing import Tuple, List, Dict
 
 import pygame
-from PIL import Image, ImageDraw
+from copy import copy
+from enum import Enum, auto
 
+from bsp import TreeVisitor, TreeNode, BSPTree
 from csp import MinConflictsSolver, Problem, FunctionConstraint
 
 WIDTH = 1920
@@ -82,13 +82,19 @@ class Color(Enum):
     GOLD = (183, 162, 29)
 
 
-class Rectangle(ABC):
+class Rectangle:
     """ Rectangle """
     x: int
     y: int
     w: int
     h: int
     color: Tuple[int, int, int]
+
+    def __init__(self, x: int, y: int, w: int, h: int):
+        self.x = int(x)
+        self.y = int(y)
+        self.w = int(w)
+        self.h = int(h)
 
     def get_x(self) -> int:
         return self.x
@@ -132,12 +138,6 @@ class Area(Rectangle):
     """ Represents area of canvas with color mappings """
 
     material_to_color: Dict[Material, Color]
-
-    def __init__(self, x: int, y: int, w: int, h: int):
-        self.x = int(x)
-        self.y = int(y)
-        self.w = int(w)
-        self.h = int(h)
 
     def get_material_color(self, material: 'Material'):
         return self.material_to_color[material].value
@@ -399,16 +399,18 @@ class PointGenerator(Generator, ABC):
         pass
 
 
+class RegionType(Enum):
+    CAVE = auto()
+    ORE = auto()
+
+
 class Region(Rectangle, Generator, ABC):
     """ Represents region of canvas, with specific generation algorithm implemented """
 
-    def __init__(self, x, y, w, h, material: Material):
+    def __init__(self, x: int, y: int, w: int, h: int, material: Material):
+        super(Region, self).__init__(x, y, w, h)
         self.pixels = []
         self.material = material
-        self.x = int(x)
-        self.y = int(y)
-        self.w = int(w)
-        self.h = int(h)
 
     def get_material(self):
         return self.material
@@ -488,11 +490,131 @@ class Region(Rectangle, Generator, ABC):
 
 
 class CaveRegion(Region):
+    """ Cellular automata cave region """
 
-    def generate(self, pixels: List[Tuple[int, int]]):
-        for pixel in pixels:
-            x, y = pixel
-            self.pixels.append([x, y])
+    def generate(self, config: Tuple[Tuple[int, int], ...], birth_chance: float):
+        w = self.w
+        h = self.h
+
+        def flood_fill(x: int, y: int, grid: List[bool], visited: Dict[Tuple[int, int], bool]) \
+                -> Tuple[List[Tuple[int, int]], List[Tuple[int, int]]]:
+            """
+            Start flood fill from specific pixel and returns tuple of visited (alive, dead) elements
+            :param x: x coordinate
+            :param y: y coordinate
+            :param grid: 1D grid array of elements
+            :param visited: dictionary of visited elements
+            """
+
+            queue: List[Tuple[int, int]] = [(x, y)]
+            alive: Dict[Tuple[int, int], bool] = {}
+            dead: Dict[Tuple[int, int], bool] = {}
+            while len(queue) > 0:
+                coords = queue.pop()
+
+                if coords not in visited:
+                    x0, y0 = coords
+                    current = grid[transform_coords(x0, y0)]
+                    # only traverse if cell is alive
+                    # fuck dead cells
+                    # yeah
+                    visited[coords] = current
+                    if current is True:
+                        alive[coords] = True
+
+                        if x0 > 0:
+                            queue.append((x0 - 1, y0))
+                        if x0 < w - 1:
+                            queue.append((x0 + 1, y0))
+                        if y0 > 0:
+                            queue.append((x0, y0 - 1))
+                        if y0 < h - 1:
+                            queue.append((x0, y0 + 1))
+                    else:
+                        dead[coords] = False
+            return list(alive.keys()), list(dead.keys())
+
+        def transform_coords(x: int, y: int):
+            """ :returns 1D array index """
+            nonlocal w, h
+            return y * w + x
+
+        def count_alive_neighbours(x: int, y: int, grid: List[bool]):
+            """ :returns number of alive neighbours  """
+            nonlocal w, h
+            alive = 0
+            if x > 0:
+                if y > 0:
+                    if grid[transform_coords(x - 1, y - 1)]:
+                        alive += 1
+                if grid[transform_coords(x - 1, y)]:
+                    alive += 1
+                if y < h - 1:
+                    if grid[transform_coords(x - 1, y + 1)]:
+                        alive += 1
+            if y > 0:
+                if grid[transform_coords(x, y - 1)]:
+                    alive += 1
+            if y < h - 1:
+                if grid[transform_coords(x, y + 1)]:
+                    alive += 1
+            if x < w - 1:
+                if y > 0:
+                    if grid[transform_coords(x + 1, y - 1)]:
+                        alive += 1
+                if grid[transform_coords(x + 1, y)]:
+                    alive += 1
+                if y < h - 1:
+                    if grid[transform_coords(x + 1, y + 1)]:
+                        alive += 1
+            return alive
+
+        lattice: List[bool] = [True if random.random() > birth_chance else False for _ in range(w * h)]
+
+        for step in range(len(config)):
+            death_limit, birth_limit = config[step]
+
+            updated_lattice = [False for _ in range(w * h)]
+
+            for x in range(w):
+                for y in range(h):
+                    alive = count_alive_neighbours(x, y, lattice)
+
+                    if lattice[transform_coords(x, y)]:
+                        if alive < death_limit:
+                            updated_lattice[transform_coords(x, y)] = False
+                        else:
+                            updated_lattice[transform_coords(x, y)] = True
+                    else:
+                        if alive > birth_limit:
+                            updated_lattice[transform_coords(x, y)] = True
+                        else:
+                            updated_lattice[transform_coords(x, y)] = False
+
+            lattice = updated_lattice
+
+        # remove small caves using flood fill
+        visited: Dict[Tuple[int, int], bool] = {}
+        for x in range(w):
+            for y in range(h):
+                coords = (x, y)
+                if coords not in visited:
+                    alive, dead = flood_fill(x, y, lattice, visited)
+                    # if there are less alive cells than 30, remove them
+                    if len(alive) < 30:  # TODO parametrize
+                        for coord in alive:
+                            x0, y0 = coord
+                            lattice[transform_coords(x0, y0)] = False
+        x = self.x
+        y = self.y
+        for cell in lattice:
+            if cell:
+                self.pixels.append((x, y))
+            if x < (self.x + self.w) - 1:
+                x += 1
+            else:
+                x = self.x
+                y += 1
 
 
 class OreRegion(Region):
@@ -531,9 +653,6 @@ class SurfaceRegion(Region):
         w, h = area.get_width(), area.get_height()
 
         for x, _y in enumerate(y_array):
-            # y + h is surface base
-            # (y_array[x] * .75) * h will scale y in range 0:1 to range 0h:.75h
-            #  - (h / 4) will lift everything to .25 %
             for __y in range(int(y + h - (y_array[x] * .75) * h - (h / 4)), y + h):
                 self.pixels.append((self.x + x, __y))
 
@@ -553,15 +672,15 @@ class Drawer(ABC):
         pass
 
     @abstractmethod
+    def draw_outline(self, region: Rectangle):
+        pass
+
+    @abstractmethod
     def draw_area(self, area: Area):
         pass
 
     @abstractmethod
     def draw_region(self, region: Region):
-        pass
-
-    @abstractmethod
-    def draw_outline(self, region: Region):
         pass
 
     @abstractmethod
@@ -575,51 +694,6 @@ class Drawer(ABC):
     @abstractmethod
     def fill(self, color):
         pass
-
-
-class PillowDrawer(Drawer):
-    """ Drawing interface """
-
-    def __init__(self, config):
-        self.config = config
-        self.canvas = Image.new("RGB", (config.get_width(), config.get_height()))
-        self.drawer = ImageDraw.Draw(self.canvas)
-
-    def init(self):
-        return
-
-    def free(self):
-        name = ''.join(random.choice(string.ascii_lowercase) for _ in range(10))
-        self.canvas.save("img/" + name + ".png")
-        self.canvas.show()
-
-    def draw_rect(self, rect: Rectangle, color: Tuple[int, int, int] = None):
-        pass
-
-    def draw_area(self, area: Area):
-        x, y, x1, y1 = area.get_points()
-        color = area.get_color()
-        self.drawer.rectangle((x, y, x1, y1), color)
-
-    def draw_region(self, region: Region):
-        for block in region.get_pixels():
-            self.draw_area(block)
-
-    def draw_outline(self, region: Region):
-        x, y, x1, y1 = region.get_points()
-        color = (255, 0, 0)
-        self.drawer.rectangle((x, y, x1, y1), fill=None, outline=color)
-
-    def draw_progress(self, text: string):
-        pass
-
-    def draw_polygon(self, points: Tuple[Tuple[int, int], ...], color: Tuple[int, int, int]):
-        pass
-
-    def fill(self, color):
-        w = self.config.get_width()
-        h = self.config.get_height()
-        self.drawer.rectangle((0, 0, w, h), color)
 
 
 class PygameDrawer(Drawer):
@@ -665,6 +739,13 @@ class PygameDrawer(Drawer):
         pygame.draw.rect(self.canvas, color, (x, y, x1, y1))
         pygame.display.update((x, y, x1, y1))
 
+    def draw_outline(self, rect: Rectangle):
+        x, y, x1, y1 = rect.get_rect()
+        color = (255, 0, 0)
+        pygame.draw.rect(self.canvas, color, (x, y, x1, y1), 1)
+        pygame.display.update((x, y, x1, y1))
+        self._handle_events()
+
     def draw_area(self, area: Area):
         x, y, x1, y1 = area.get_points()
         for _x in range(x, x1):
@@ -686,13 +767,6 @@ class PygameDrawer(Drawer):
         self._handle_events()
         x, y, x1, y1 = region.get_rect()
         pygame.display.update((x, y, x1, y1))
-
-    def draw_outline(self, region: Region):
-        x, y, x1, y1 = region.get_rect()
-        color = (255, 0, 0)
-        pygame.draw.rect(self.canvas, color, (x, y, x1, y1), 1)
-        pygame.display.update((x, y, x1, y1))
-        self._handle_events()
 
     def draw_polygon(self, points: Tuple[Tuple[int, int], ...], color: Tuple[int, int, int]):
         pygame.draw.polygon(self.canvas, color, points)
@@ -1141,6 +1215,34 @@ class CaveGenerator(RegionGenerator):
         return regions
 
 
+class CreateCaveTreeVisitor(TreeVisitor):
+
+    def __init__(self):
+        self._regions: List[Region] = []
+
+    @property
+    def regions(self):
+        return tuple(self._regions)
+
+    def visit(self, node: TreeNode):
+        if node.leaf and node.type is None and random.random() > 0.5:
+            node.type = RegionType.CAVE
+            region = CaveRegion(node.x, node.y, node.w, node.h, Material.BASE)
+            region.generate(((3, 4),) * 7, 0.5)
+            self._regions.append(region)
+
+
+class DrawTreeVisitor(TreeVisitor):
+    """ Traverse tree and draw leaf nodes """
+
+    def __init__(self, drawer: Drawer):
+        self._drawer = drawer
+
+    def visit(self, node: TreeNode):
+        if node.leaf:
+            self._drawer.draw_outline(Rectangle(node.x, node.y, node.w, node.h))
+
+
 class Scene(ABC):
     """ Generation scene """
     config: Config
@@ -1167,8 +1269,13 @@ class MainScene(Scene):
                 self.drawer.draw_outline(region)
 
     def play(self):
-        self.drawer.init()
+        width = self.config.get_width()
+        height = self.config.get_height()
+        tree = BSPTree(0, HorizontalAreas.Underground.y, width,
+                       HorizontalAreas.Underground.h + HorizontalAreas.Cavern.h)
+        tree.grow(9)
 
+        self.drawer.init()
         self.drawer.draw_progress("Init ...")
         self.drawer.fill((0, 0, 0))
         self.drawer.draw_area(HorizontalAreas.Space)
@@ -1189,15 +1296,11 @@ class MainScene(Scene):
         regions = surface_generator.generate()
         self.draw_regions(regions)
 
-        self.drawer.draw_progress("Generating caves ...")
-        cave_generator = CaveGenerator(self.config)
-        regions = cave_generator.generate(3, 4, 8, .43, 175)
-        self.draw_regions(regions)
+        # tree.traverse(DrawTreeVisitor(self.drawer))
 
-        self.drawer.draw_progress("Generating ores ...")
-        ore_generator = OreGenerator(self.config)
-        regions = ore_generator.generate(250, 10, 30)
-        self.draw_regions(regions)
+        cave_tree_visitor = CreateCaveTreeVisitor()
+        tree.traverse(cave_tree_visitor)
+        self.draw_regions(cave_tree_visitor.regions)
 
         self.drawer.draw_progress("Done ...")
 
