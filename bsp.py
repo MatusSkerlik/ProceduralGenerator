@@ -16,67 +16,19 @@ def _bsp(x_mn, y_mn, x_mx, y_mx, vertical=False, r_v=0.25, r_h=0.25):
 class TreeNode:
 
     def __init__(self, x: int, y: int, w: int, h: int):
-        self._x = x
-        self._y = y
-        self._w = w
-        self._h = h
-        self._type = None
+        self.x = x
+        self.y = y
+        self.w = w
+        self.h = h
+        self.type = None
 
-        self._left = None
-        self._right = None
-        self._depth = 0
-
-    @property
-    def x(self):
-        return self._x
-
-    @property
-    def y(self):
-        return self._y
-
-    @property
-    def w(self):
-        return self._w
-
-    @property
-    def h(self):
-        return self._h
+        self.left = None
+        self.right = None
+        self.depth = 0
 
     @property
     def leaf(self):
-        return self._left is None and self._right is None
-
-    @property
-    def type(self):
-        return self._type
-
-    @type.setter
-    def type(self, value):
-        self._type = value
-
-    @property
-    def depth(self):
-        return self._depth
-
-    @depth.setter
-    def depth(self, value):
-        self._depth = value
-
-    @property
-    def left(self):
-        return self._left
-
-    @left.setter
-    def left(self, value):
-        self._left = value
-
-    @property
-    def right(self):
-        return self._right
-
-    @right.setter
-    def right(self, value):
-        self._right = value
+        return self.left is None and self.right is None
 
 
 class TreeVisitor(ABC):
@@ -89,12 +41,12 @@ class BSPTree:
     """ Problem specific BPS """
 
     def __init__(self, x: int, y: int, w: int, h: int):
-        self._root = TreeNode(x, y, w, h)
+        self.root = TreeNode(x, y, w, h)
 
     def grow(self, depth: int):
-        self._root.left = None
-        self._root.right = None
-        leaves = [self._root]
+        self.root.left = None
+        self.root.right = None
+        leaves = [self.root]
 
         for depth in range(depth):
             new_leaves = []
@@ -115,10 +67,6 @@ class BSPTree:
                 new_leaves.append(leaf.left)
                 new_leaves.append(leaf.right)
             leaves = new_leaves
-
-    @property
-    def root(self):
-        return self._root
 
     def traverse(self, visitor: TreeVisitor):
         leaves = [self.root]
