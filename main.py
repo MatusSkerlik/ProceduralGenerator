@@ -4,9 +4,8 @@ import string
 import time
 from abc import abstractmethod, ABC
 from enum import Enum, auto
+from functools import partial
 from typing import Tuple, List, Dict
-
-import pygame
 
 from bsp import TreeVisitor, TreeNode, BSPTree
 
@@ -332,9 +331,12 @@ class PygameDrawer:
     def _handle_events(self):
         for event in pygame.event.get():
             if event.type == pygame.QUIT or (event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE):
+                name = ''.join(random.choice(string.ascii_lowercase) for _ in range(10))
+                pygame.image.save(self.canvas, "img/" + name + ".png")
                 pygame.quit()
                 pygame.font.quit()
-                exit(0)
+                signal.raise_signal(signal.SIGINT)
+                break
 
     def init(self):
         global WIDTH, HEIGHT
@@ -344,15 +346,9 @@ class PygameDrawer:
         self._font = pygame.font.Font("font.ttf", 12)
 
     def free(self):
-        name = ''.join(random.choice(string.ascii_lowercase) for _ in range(10))
-        pygame.image.save(self.canvas, "img/" + name + ".png")
         while True:
-            time.sleep(0.016)
-            for event in pygame.event.get():
-                if event.type == pygame.QUIT or (event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE):
-                    pygame.quit()
-                    pygame.font.quit()
-                    exit(0)
+            time.sleep(1 / 60)
+            self._handle_events()
 
     def draw_rect(self, rect: Rectangle, color: Color = None):
         x, y, x1, y1 = rect.get_points()
@@ -364,6 +360,7 @@ class PygameDrawer:
                     color = PixelMaterialColorMap.get_color(x0, y0, Material.BACKGROUND)
                     pygame.draw.rect(self.canvas, color, (x0, y0, 1, 1))
         pygame.display.update((x, y, x1, y1))
+        self._handle_events()
 
     def draw_outline(self, rect: Rectangle, color: Color):
         x, y, x1, y1 = rect.get_rect()
@@ -382,6 +379,7 @@ class PygameDrawer:
             else:
                 pygame.draw.rect(self.canvas, color, (x, y, 1, 1))
         pygame.display.update(get_bounding_rect(pixels))
+        self._handle_events()
 
     def draw_polygon(self, points: Tuple[Tuple[int, int], ...], color: Tuple[int, int, int]):
         pygame.draw.polygon(self.canvas, color, points)
@@ -413,6 +411,7 @@ class PygameDrawer:
                 by = y
 
         pygame.display.update((sx, sy, bx - sx, by - sy))
+        self._handle_events()
 
     def draw_progress(self, text: string):
         global WIDTH, HEIGHT
@@ -420,6 +419,7 @@ class PygameDrawer:
         font = self._font.render(text, False, (255, 255, 255))
         self.canvas.blit(font, (4, HEIGHT + 4))
         pygame.display.update((0, HEIGHT, WIDTH, HEIGHT))
+        self._handle_events()
 
 
 class CreateCaveTreeVisitor(TreeVisitor):
@@ -429,12 +429,16 @@ class CreateCaveTreeVisitor(TreeVisitor):
 
     def visit(self, node: TreeNode):
         if node.leaf and node.type is None:
-            pixels = create_cave(Rectangle(node.x, node.y, node.w, node.h), ((3, 4),) * 5 + ((4, 4),) * 2, .525)
-            node.type = RegionType.CAVE
-            try:
+            func = partial(create_cave, Rectangle(node.x, node.y, node.w, node.h), ((3, 4),) * 5 + ((4, 4),) * 2, .525)
+
+            def success(pixels):
                 self.drawer.draw_pixels(pixels, material=Material.CAVE_BACKGROUND)
-            except KeyError:
-                pass
+
+            def error(err):
+                print(err)
+
+            parallel.to_process(func, success, error)
+            node.type = RegionType.CAVE
 
 
 class DrawTreeVisitor(TreeVisitor):
@@ -466,7 +470,7 @@ class MainScene(Scene):
         global WIDTH, HEIGHT, DEBUG
 
         tree = BSPTree(0, Underground.y, WIDTH, Underground.h + Cavern.h)
-        tree.grow(6)
+        tree.grow(8)
 
         PixelMaterialColorMap.add_rect(Space, {
             Material.BACKGROUND: Colors.BACKGROUND_SPACE,
@@ -518,5 +522,9 @@ class MainScene(Scene):
 
 
 if __name__ == '__main__':
+    import pygame
+    import parallel
+    import signal
+
     scene = MainScene()
     scene.run()
