@@ -1,3 +1,4 @@
+import itertools
 import math
 import random
 import string
@@ -52,6 +53,7 @@ LOWLAND_LEVEL1_COUNT = 2
 LOWLAND_LEVEL2_COUNT = 1
 LOWLAND_LEVEL3_COUNT = 1
 DEBUG = False
+SURFACE = None
 
 
 class Material(Enum):
@@ -79,7 +81,6 @@ class Colors:
     BACKGROUND_CAVERN = (127, 127, 127)
     BACKGROUND_UNDERWORLD = (0, 0, 0)
 
-    GRASS = (60, 189, 90)
     STONE = (53, 53, 62)
     DIRT = (88, 63, 50)
     MUD = (94, 68, 71)
@@ -88,6 +89,9 @@ class Colors:
     IRON = (127, 127, 127)  # todo
     SILVER = (215, 222, 222)
     GOLD = (183, 162, 29)
+
+    GRASS = (33, 214, 94)
+    JUNGLE_GRASS = (136, 204, 33)
 
 
 Color = Tuple[int, int, int]
@@ -123,6 +127,19 @@ class Rectangle:
     def is_inside(self, x: int, y: int):
         return self.x <= x <= (self.x + self.w) and self.y <= y <= (self.y + self.h)
 
+    def to_pixel_array(self):
+        pixels = []
+        for x in range(self.x, self.x + self.w):
+            for y in range(self.y, self.y + self.h):
+                pixels.append((x, y))
+        return pixels
+
+    def __add__(self, other):
+        return Rectangle(self.x, self.y, self.w, self.w + other.w)
+
+    def __iter__(self):
+        return itertools.product(range(self.x, self.x + self.w), range(self.y, self.y + self.h))
+
     def __repr__(self):
         return "%d %d %d %d \n" % (self.x, self.y, self.w, self.h)
 
@@ -143,6 +160,45 @@ class Grid:
     def __getitem__(self, item):
         x, y = item
         return self._array[(y - self.y) * self.w + (x - self.x)]
+
+    def __iter__(self):
+        return itertools.product(range(self.x, self.x + self.w), range(self.y, self.y + self.h))
+
+    @staticmethod
+    def from_rect(rect: Rectangle):
+        return Grid(rect.x, rect.y, rect.w, rect.h)
+
+
+def make_grid(rect: Rectangle, surface, mapping: Dict[Material, int], default_state: int = 0):
+    grid = Grid.from_rect(rect)
+    pixel_buffer = pygame.surfarray.pixels3d(surface)
+
+    for x, y in rect:
+        material_to_color = PixelMaterialColorMap.get_mapping(x, y)
+        color_to_material = dict((v, k) for k, v in material_to_color.items())
+        color = tuple(pixel_buffer[x, y])
+        if color in color_to_material:
+            material = color_to_material[color]
+            if material in mapping:
+                grid[x, y] = mapping[material]
+            else:
+                grid[x, y] = default_state
+        else:
+            grid[x, y] = default_state
+    del pixel_buffer
+    return grid
+
+
+def make_grass(rect: Rectangle, grid: Grid, air_state: int, wall_state: int):
+    grass_pixels = []
+    for x, y in rect:
+        nbs = nbs_neumann(x, y, grid)
+        top, right, bottom, left = nbs
+
+        if len([1 for c in (right, bottom, left) if c == air_state]) and len([1 for c in nbs if c == wall_state]):
+            grass_pixels.append((x, y))
+
+    return grass_pixels
 
 
 def flood_fill(x: int, y: int, state: int, grid: Grid):
@@ -166,7 +222,8 @@ def flood_fill(x: int, y: int, state: int, grid: Grid):
                     queue.append((x0, y0 - 1))
                 if y0 < grid.y + grid.h - 1:
                     queue.append((x0, y0 + 1))
-    return cells
+
+    return cells, visited
 
 
 def nbs_neumann(x: int, y: int, grid: Grid):
@@ -202,32 +259,39 @@ def nbs_moore(x: int, y: int, grid: Grid):
 
 
 def create_cave(rect: Rectangle, config_seq: Tuple[Tuple[int, int], ...], birth_chance: float):
-    grid = Grid(rect.x, rect.y, rect.w, rect.h)
+    grid = Grid.from_rect(rect)
 
-    for x in range(grid.x, grid.x + grid.w):
-        for y in range(grid.y, grid.y + grid.h):
-            grid[x, y] = 1 if random.random() > birth_chance else 0
+    for x, y in rect:
+        grid[x, y] = 1 if random.random() > birth_chance else 0
 
     for step in range(len(config_seq)):
         death_limit, birth_limit = config_seq[step]
-        updated_grid = Grid(rect.x, rect.y, rect.w, rect.h)
-        for x in range(grid.x, grid.x + grid.w):
-            for y in range(grid.y, grid.y + grid.h):
-                alive = len([True for _ in nbs_moore(x, y, grid) if _ == 1])
+        updated_grid = Grid.from_rect(rect)
+        for x, y in grid:
+            alive = len([True for _ in nbs_moore(x, y, grid) if _ == 1])
 
-                if grid[x, y] == 1:
-                    if alive < death_limit:
-                        updated_grid[x, y] = 0
-                    else:
-                        updated_grid[x, y] = 1
+            if grid[x, y] == 1:
+                if alive < death_limit:
+                    updated_grid[x, y] = 0
                 else:
-                    if alive > birth_limit:
-                        updated_grid[x, y] = 1
-                    else:
-                        updated_grid[x, y] = 0
+                    updated_grid[x, y] = 1
+            else:
+                if alive > birth_limit:
+                    updated_grid[x, y] = 1
+                else:
+                    updated_grid[x, y] = 0
         grid = updated_grid
 
-    return [(x, y) for x in range(grid.x, grid.x + grid.w) for y in range(grid.y, grid.y + grid.h) if grid[x, y] == 0]
+    visited = {}
+    for x, y in grid:
+        if (x, y) not in visited:
+            cells, newly_visited = flood_fill(x, y, 1, grid)
+            visited.update(newly_visited)
+            if len(cells) < 75:
+                for x0, y0 in cells:
+                    grid[x0, y0] = 0
+
+    return [(x, y) for x, y in grid if grid[x, y] == 1]
 
 
 def cerp(v0: float, v1: float, t: float):
@@ -270,13 +334,12 @@ def create_surface(rect: Rectangle, l1: int, l2: int, l3: int, b: int, h1: int, 
         noise += [(l + 3) * 1 / 6] * (w - fw)
         for i in range(fw):
             noise += [cerp((l + 3) * 1 / 6, (ln + 3) * 1 / 6, i / fw)]
-        #        assert len(noise) - cw == w
         cw += w
     noise += [(level_order.pop() + 3) * 1 / 6] * level_width.pop()
 
     # map to pixels
     pixels = []
-    x = 0
+    x = rect.x
     for y in noise:
         for y0 in range(int(rect.y + rect.h - rect.h * y), rect.y + rect.h):
             pixels.append((x, y0))
@@ -314,6 +377,10 @@ class PixelMaterialColorMap:
     def get_color(cls, x, y, material: Material) -> Color:
         return cls._map[(x, y)][material]
 
+    @classmethod
+    def get_mapping(cls, x, y) -> Dict[Material, Color]:
+        return cls._map[(x, y)]
+
 
 class RegionType(Enum):
     CAVE = auto()
@@ -324,25 +391,27 @@ class PygameDrawer:
     """ Drawing interface """
 
     def __init__(self):
-        self.canvas = None
         self.running = False
         self._font = None
 
     def _handle_events(self):
+        global SURFACE
+
         for event in pygame.event.get():
             if event.type == pygame.QUIT or (event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE):
                 name = ''.join(random.choice(string.ascii_lowercase) for _ in range(10))
-                pygame.image.save(self.canvas, "img/" + name + ".png")
+                pygame.image.save(SURFACE, "img/" + name + ".png")
                 pygame.quit()
                 pygame.font.quit()
                 signal.raise_signal(signal.SIGINT)
                 break
 
     def init(self):
-        global WIDTH, HEIGHT
+        global WIDTH, HEIGHT, SURFACE
+
         pygame.init()
         pygame.font.init()
-        self.canvas = pygame.display.set_mode([WIDTH, HEIGHT])
+        SURFACE = pygame.display.set_mode([WIDTH, HEIGHT])
         self._font = pygame.font.Font("font.ttf", 12)
 
     def free(self):
@@ -351,38 +420,46 @@ class PygameDrawer:
             self._handle_events()
 
     def draw_rect(self, rect: Rectangle, color: Color = None):
-        x, y, x1, y1 = rect.get_points()
+        global SURFACE
+
+        x, y, x1, y1 = rect.get_rect()
         if color is not None:
-            pygame.draw.rect(self.canvas, color, (x, y, x1, y1))
+            pygame.draw.rect(SURFACE, color, (x, y, x1, y1))
         else:
             for x0 in range(x, x1):
                 for y0 in range(y, y1):
                     color = PixelMaterialColorMap.get_color(x0, y0, Material.BACKGROUND)
-                    pygame.draw.rect(self.canvas, color, (x0, y0, 1, 1))
+                    pygame.draw.rect(SURFACE, color, (x0, y0, 1, 1))
         pygame.display.update((x, y, x1, y1))
         self._handle_events()
 
     def draw_outline(self, rect: Rectangle, color: Color):
+        global SURFACE
+
         x, y, x1, y1 = rect.get_rect()
-        pygame.draw.rect(self.canvas, color, (x, y, x1, y1), 1)
+        pygame.draw.rect(SURFACE, color, (x, y, x1, y1), 1)
         pygame.display.update((x, y, x1, y1))
         self._handle_events()
 
     def draw_pixels(self, pixels, color: Color = None, material: Material = None):
+        global SURFACE
+
         for x, y in pixels:
             if color is None:
                 if material is None:
                     c = PixelMaterialColorMap.get_color(x, y, Material.BACKGROUND)
                 else:
                     c = PixelMaterialColorMap.get_color(x, y, material)
-                pygame.draw.rect(self.canvas, c, (x, y, 1, 1))
+                pygame.draw.rect(SURFACE, c, (x, y, 1, 1))
             else:
-                pygame.draw.rect(self.canvas, color, (x, y, 1, 1))
+                pygame.draw.rect(SURFACE, color, (x, y, 1, 1))
         pygame.display.update(get_bounding_rect(pixels))
         self._handle_events()
 
     def draw_polygon(self, points: Tuple[Tuple[int, int], ...], color: Tuple[int, int, int]):
-        pygame.draw.polygon(self.canvas, color, points)
+        global SURFACE
+
+        pygame.draw.polygon(SURFACE, color, points)
 
         sx = None
         sy = None
@@ -414,10 +491,11 @@ class PygameDrawer:
         self._handle_events()
 
     def draw_progress(self, text: string):
-        global WIDTH, HEIGHT
-        pygame.draw.rect(self.canvas, (0, 128, 128), (0, HEIGHT, WIDTH, HEIGHT + 64))
+        global WIDTH, HEIGHT, SURFACE
+
+        pygame.draw.rect(SURFACE, (0, 128, 128), (0, HEIGHT, WIDTH, HEIGHT + 64))
         font = self._font.render(text, False, (255, 255, 255))
-        self.canvas.blit(font, (4, HEIGHT + 4))
+        SURFACE.blit(font, (4, HEIGHT + 4))
         pygame.display.update((0, HEIGHT, WIDTH, HEIGHT))
         self._handle_events()
 
@@ -429,7 +507,12 @@ class CreateCaveTreeVisitor(TreeVisitor):
 
     def visit(self, node: TreeNode):
         if node.leaf and node.type is None:
-            func = partial(create_cave, Rectangle(node.x, node.y, node.w, node.h), ((3, 4),) * 5 + ((4, 4),) * 2, .525)
+            if random.random() > 0.75:
+                func = partial(create_cave, Rectangle(node.x, node.y, node.w, node.h), ((5, 1),) * 8 + ((5, 8),) * 4,
+                               .75)
+            else:
+                func = partial(create_cave, Rectangle(node.x, node.y, node.w, node.h), ((3, 4),) * 2 + ((4, 4),) * 2,
+                               .575)
 
             def success(pixels):
                 self.drawer.draw_pixels(pixels, material=Material.CAVE_BACKGROUND)
@@ -512,10 +595,41 @@ class MainScene(Scene):
             self.drawer.draw_outline(Underworld, MAGENTA)
             tree.traverse(DrawTreeVisitor(self.drawer))
 
-        self.drawer.draw_pixels(create_surface(Surface, 1, 2, 3, 1, 3, 2, 1, 0.8), Colors.BACKGROUND_UNDERGROUND)
+        surface_w_offset_left = 0.075 * WIDTH
+        surface_w_offset_right = 0.075 * WIDTH
+        surface_w = WIDTH - surface_w_offset_right - surface_w_offset_right
+        SURFACE_H = Surface.h
+        surface_h_offset_bottom = 0.25 * SURFACE_H
+        surface_h_offset_top = 0.35 * SURFACE_H
+        surface_h = SURFACE_H - surface_h_offset_bottom - surface_h_offset_top
+        surface_x = surface_w_offset_left
+        surface_y = Space.h + surface_h_offset_top
+        Surf = Rectangle(surface_x, surface_y, surface_w, surface_h)
+        self.drawer.draw_pixels(create_surface(Surf, 1, 2, 3, 1, 3, 2, 1, 0.8), Colors.BACKGROUND_UNDERGROUND)
+        self.drawer.draw_rect(Rectangle(
+            0,
+            Space.h + surface_h_offset_top + surface_h - 1,
+            WIDTH,
+            surface_h_offset_bottom + 2
+        ), Colors.BACKGROUND_UNDERGROUND)
+        self.drawer.draw_outline(Rectangle(
+            0,
+            Space.h + surface_h_offset_top + surface_h - 1,
+            WIDTH,
+            surface_h_offset_bottom + 2
+        ), RED)
 
         cave_tree_visitor = CreateCaveTreeVisitor(self.drawer)
         tree.traverse(cave_tree_visitor)
+
+        def success(grid):
+            pixels = make_grass(Surface, grid, 0, 1)
+            self.drawer.draw_pixels(pixels, Colors.GRASS)
+
+        def error(err):
+            print(err)
+
+        parallel.to_thread(partial(make_grid, Surface, SURFACE, {Material.BACKGROUND: 0}, 1), success, error)
 
         self.drawer.draw_progress("Done ...")
         self.drawer.free()

@@ -53,7 +53,7 @@ def to_process(func, success_callback, error_callback):
     global process_pool
 
     if process_pool is None:
-        process_pool = multiprocessing.Pool()
+        process_pool = multiprocessing.Pool(processes=4)
     process_pool.apply_async(func, callback=success_callback, error_callback=error_callback)
 
 
