@@ -10,41 +10,8 @@ from typing import Tuple, List, Dict
 
 from bsp import TreeVisitor, TreeNode, BSPTree
 
-
-def get_bounding_rect(pixels):
-    min_x = 0
-    min_y = 0
-    max_x = 0
-    max_y = 0
-    initialized = False
-
-    for x, y in pixels:
-        if not initialized:
-            min_x = x
-            min_y = y
-            max_x = x
-            max_y = y
-            initialized = True
-        else:
-            if x < min_x:
-                min_x = x
-            if x > max_x:
-                max_x = x
-            if y < min_y:
-                min_y = y
-            if y > max_y:
-                max_y = y
-
-    x = min_x
-    y = min_y
-    w = max_x - min_x + 1
-    h = max_y - min_y + 1
-
-    return x, y, w, h
-
-
-WIDTH = 1920
-HEIGHT = 1080
+WIDTH = 1280
+HEIGHT = 800
 HILLS_LEVEL1_COUNT = 1
 HILLS_LEVEL2_COUNT = 3
 HILLS_LEVEL3_COUNT = 2
@@ -70,6 +37,9 @@ class Material(Enum):
     MATERIAL9 = auto()
     BACKGROUND = auto()
     CAVE_BACKGROUND = auto()
+    WATER = auto()
+    LAVA = auto()
+    SAND = auto()
 
 
 class Colors:
@@ -92,6 +62,9 @@ class Colors:
 
     GRASS = (33, 214, 94)
     JUNGLE_GRASS = (136, 204, 33)
+    SAND = (213, 197, 111)
+    WATER = (14, 59, 192)
+    LAVA = (251, 31, 8)
 
 
 Color = Tuple[int, int, int]
@@ -101,6 +74,7 @@ GREEN = (0, 255, 0)
 CYAN = (0, 255, 255)
 BLUE = (0, 0, 255)
 MAGENTA = (255, 0, 255)
+ORANGE = (255, 165, 0)
 
 
 class Rectangle:
@@ -165,40 +139,47 @@ class Grid:
         return itertools.product(range(self.x, self.x + self.w), range(self.y, self.y + self.h))
 
     @staticmethod
-    def from_rect(rect: Rectangle):
-        return Grid(rect.x, rect.y, rect.w, rect.h)
+    def from_rect(rect: Rectangle, state: int = 0):
+        return Grid(rect.x, rect.y, rect.w, rect.h, state)
+
+    @staticmethod
+    def from_pixels(rect: Rectangle, pixels, state: int = 1):
+        grid = Grid.from_rect(rect)
+        for x, y in pixels:
+            grid[x, y] = state
+        return grid
 
 
-def make_grid(rect: Rectangle, surface, mapping: Dict[Material, int], default_state: int = 0):
-    grid = Grid.from_rect(rect)
-    pixel_buffer = pygame.surfarray.pixels3d(surface)
+def get_bounding_rect(pixels):
+    min_x = 0
+    min_y = 0
+    max_x = 0
+    max_y = 0
+    initialized = False
 
-    for x, y in rect:
-        material_to_color = PixelMaterialColorMap.get_mapping(x, y)
-        color_to_material = dict((v, k) for k, v in material_to_color.items())
-        color = tuple(pixel_buffer[x, y])
-        if color in color_to_material:
-            material = color_to_material[color]
-            if material in mapping:
-                grid[x, y] = mapping[material]
-            else:
-                grid[x, y] = default_state
+    for x, y in pixels:
+        if not initialized:
+            min_x = x
+            min_y = y
+            max_x = x
+            max_y = y
+            initialized = True
         else:
-            grid[x, y] = default_state
-    del pixel_buffer
-    return grid
+            if x < min_x:
+                min_x = x
+            if x > max_x:
+                max_x = x
+            if y < min_y:
+                min_y = y
+            if y > max_y:
+                max_y = y
 
+    x = min_x
+    y = min_y
+    w = max_x - min_x + 1
+    h = max_y - min_y + 1
 
-def make_grass(rect: Rectangle, grid: Grid, air_state: int, wall_state: int):
-    grass_pixels = []
-    for x, y in rect:
-        nbs = nbs_neumann(x, y, grid)
-        top, right, bottom, left = nbs
-
-        if len([1 for c in (right, bottom, left) if c == air_state]) and len([1 for c in nbs if c == wall_state]):
-            grass_pixels.append((x, y))
-
-    return grass_pixels
+    return Rectangle(x, y, w, h)
 
 
 def flood_fill(x: int, y: int, state: int, grid: Grid):
@@ -258,6 +239,38 @@ def nbs_moore(x: int, y: int, grid: Grid):
     return nbs
 
 
+def make_grid(rect: Rectangle, surface, mapping: Dict[Material, int], default_state: int = 0):
+    grid = Grid.from_rect(rect)
+    pixel_buffer = pygame.surfarray.pixels3d(surface)
+
+    for x, y in grid:
+        material_to_color = PixelMaterialColorMap.get_mapping(x, y)
+        color_to_material = dict((v, k) for k, v in material_to_color.items())
+        color = tuple(pixel_buffer[x, y])
+        if color in color_to_material:
+            material = color_to_material[color]
+            if material in mapping:
+                grid[x, y] = mapping[material]
+            else:
+                grid[x, y] = default_state
+        else:
+            grid[x, y] = default_state
+    del pixel_buffer
+    return grid
+
+
+def create_grass(rect: Rectangle, grid: Grid, air_state: int, wall_state: int):
+    grass_pixels = []
+    for x, y in rect:
+        nbs = nbs_neumann(x, y, grid)
+        top, right, bottom, left = nbs
+
+        if len([1 for c in (right, bottom, left) if c == air_state]) and len([1 for c in nbs if c == wall_state]):
+            grass_pixels.append((x, y))
+
+    return grass_pixels
+
+
 def create_cave(rect: Rectangle, config_seq: Tuple[Tuple[int, int], ...], birth_chance: float):
     grid = Grid.from_rect(rect)
 
@@ -292,6 +305,51 @@ def create_cave(rect: Rectangle, config_seq: Tuple[Tuple[int, int], ...], birth_
                     grid[x0, y0] = 0
 
     return [(x, y) for x, y in grid if grid[x, y] == 1]
+
+
+def create_water(rect: Rectangle, grid: Grid, p: float):
+    pixels = {}
+    for x, y in rect:
+        if grid[x, y] == 1:
+            pixels[(x, y)] = True
+    water_pixels = []
+    bounding_rect = get_bounding_rect(pixels.keys())
+    for y in range(rect.y + rect.h - int(p * bounding_rect.h), rect.y + rect.h):
+        for x in range(rect.x, rect.x + rect.w):
+            if (x, y) in pixels:
+                water_pixels.append((x, y))
+    return water_pixels
+
+
+def create_ocean(rect: Rectangle, left=True, log_base=10):
+    """
+    Will create ocean into rectangle with log base as function of depth (bigger -> deeper)
+    """
+    sand_pixels = []
+    water_pixels = []
+
+    for y in range(rect.h):
+        y0 = (y / (rect.h + 1)) + (1 / log_base)
+        for x0 in range(int(abs(math.log(y0, log_base)) * rect.w)):
+            if left:
+                sand_pixels.append((rect.x + rect.w - x0, rect.y + rect.h - int(y0 * rect.h)))
+            else:
+                sand_pixels.append((rect.x + x0, rect.y + rect.h - int(y0 * rect.h)))
+
+        # bottom correction
+        for x in range(rect.x, rect.x + rect.w):
+            for y in range(rect.y + rect.h - int((1 / log_base) * rect.h), rect.y + rect.h):
+                sand_pixels.append((x, y))
+
+    for y in range(rect.h):
+        y0 = (y / (rect.h + 1)) + (1 / log_base)
+        for x0 in range(int(abs(math.log(y0, log_base)) * rect.w), rect.w):
+            if left:
+                water_pixels.append((rect.x + rect.w - (rect.x + x0), rect.y + rect.h - int(y0 * rect.h)))
+            else:
+                water_pixels.append((rect.x + x0, rect.y + rect.h - int(y0 * rect.h)))
+
+    return sand_pixels, water_pixels
 
 
 def cerp(v0: float, v1: float, t: float):
@@ -357,7 +415,11 @@ Underworld = Rectangle(0, Cavern.y + Cavern.h, WIDTH, 1 * HEIGHT / 10)
 class PixelMaterialColorMap:
     """ Class which maps colors of materials into individual pixel """
     _map: Dict[Tuple[int, int], Dict[Material, Color]] = {}
-    _default_mapping = {}
+    _default_mapping = {
+        Material.WATER: Colors.WATER,
+        Material.LAVA: Colors.LAVA,
+        Material.SAND: Colors.SAND
+    }
 
     @classmethod
     def add_rect(cls, rect: Rectangle, mapping: Dict[Material, Color]) -> None:
@@ -453,7 +515,7 @@ class PygameDrawer:
                 pygame.draw.rect(SURFACE, c, (x, y, 1, 1))
             else:
                 pygame.draw.rect(SURFACE, color, (x, y, 1, 1))
-        pygame.display.update(get_bounding_rect(pixels))
+        pygame.display.update(get_bounding_rect(pixels).get_rect())
         self._handle_events()
 
     def draw_polygon(self, points: Tuple[Tuple[int, int], ...], color: Tuple[int, int, int]):
@@ -507,20 +569,36 @@ class CreateCaveTreeVisitor(TreeVisitor):
 
     def visit(self, node: TreeNode):
         if node.leaf and node.type is None:
+            rect = Rectangle(node.x, node.y, node.w, node.h)
+
             if random.random() > 0.75:
-                func = partial(create_cave, Rectangle(node.x, node.y, node.w, node.h), ((5, 1),) * 8 + ((5, 8),) * 4,
+                func = partial(create_cave, rect, ((5, 1),) * 8 + ((5, 8),) * 4,
                                .75)
             else:
-                func = partial(create_cave, Rectangle(node.x, node.y, node.w, node.h), ((3, 4),) * 2 + ((4, 4),) * 2,
+                func = partial(create_cave, rect, ((3, 4),) * 2 + ((4, 4),) * 2,
                                .575)
 
             def success(pixels):
                 self.drawer.draw_pixels(pixels, material=Material.CAVE_BACKGROUND)
 
             def error(err):
-                print(err)
+                raise err
 
-            parallel.to_process(func, success, error)
+            token = parallel.get_token()
+            parallel.to_process(func, success, error, token)
+
+            if random.random() > 0.8:  # fill caves with water
+                def func(result):
+                    return create_water(rect, Grid.from_pixels(rect, result), random.randint(10, 50) / 100)
+
+                def success(pixels):
+                    self.drawer.draw_pixels(pixels, material=Material.LAVA if random.random() > 0.8 else Material.WATER)
+
+                def error(err):
+                    raise err
+
+                parallel.to_thread_after(func, success, error, wait_token=token)
+
             node.type = RegionType.CAVE
 
 
@@ -619,15 +697,26 @@ class MainScene(Scene):
             surface_h_offset_bottom + 2
         ), RED)
 
+        sand, water = create_ocean(
+            Rectangle(0, Space.h + Surface.h - surface_h_offset_bottom, surface_w_offset_left, surface_h_offset_bottom))
+        self.drawer.draw_pixels(sand, material=Material.SAND)
+        self.drawer.draw_pixels(water, material=Material.WATER)
+
+        sand, water = create_ocean(
+            Rectangle(WIDTH - surface_w_offset_right, Space.h + Surface.h - surface_h_offset_bottom,
+                      surface_w_offset_right, surface_h_offset_bottom), left=False)
+        self.drawer.draw_pixels(sand, material=Material.SAND)
+        self.drawer.draw_pixels(water, material=Material.WATER)
+
         cave_tree_visitor = CreateCaveTreeVisitor(self.drawer)
         tree.traverse(cave_tree_visitor)
 
         def success(grid):
-            pixels = make_grass(Surface, grid, 0, 1)
+            pixels = create_grass(Surface, grid, 0, 1)
             self.drawer.draw_pixels(pixels, Colors.GRASS)
 
         def error(err):
-            print(err)
+            raise err
 
         parallel.to_thread(partial(make_grid, Surface, SURFACE, {Material.BACKGROUND: 0}, 1), success, error)
 
