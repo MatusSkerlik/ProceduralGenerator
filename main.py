@@ -62,7 +62,7 @@ class Colors:
 
     GRASS = (33, 214, 94)
     JUNGLE_GRASS = (136, 204, 33)
-    SAND = (213, 197, 111)
+    SAND = (255, 218, 56)
     WATER = (14, 59, 192)
     LAVA = (251, 31, 8)
 
@@ -361,7 +361,8 @@ def lerp(v0: float, v1: float, t: float):
     return v0 + t * (v1 - v0)
 
 
-def create_surface(rect: Rectangle, l1: int, l2: int, l3: int, b: int, h1: int, h2: int, h3: int, fade_width: float):
+def create_surface(rect: Rectangle, l1: int, l2: int, l3: int, b: int, h1: int, h2: int, h3: int, fade_width: float,
+                   octaves: int = 0, persistence: float = 0.5):
     num_of_levels = l1 + l2 + l3 + b + h1 + h2 + h3
 
     level_order = [-1] * l1 + [-2] * l2 + [-3] * l3 + [0] * b + [1] * h1 + [2] * h2 + [3] * h3
@@ -395,7 +396,18 @@ def create_surface(rect: Rectangle, l1: int, l2: int, l3: int, b: int, h1: int, 
         cw += w
     noise += [(level_order.pop() + 3) * 1 / 6] * level_width.pop()
 
-    # map to pixels
+    o = octaves
+    while o > 0:
+        o -= 1
+        octave = octaves - o
+        for n in range(len(noise)):
+            noise[n] += noise[(n * octave ** 2) % len(noise)] / (octave ** 1 / persistence)
+
+    # normalise
+    _max = max(noise)
+    for n in range(len(noise)):
+        noise[n] /= _max
+
     pixels = []
     x = rect.x
     for y in noise:
@@ -403,6 +415,54 @@ def create_surface(rect: Rectangle, l1: int, l2: int, l3: int, b: int, h1: int, 
             pixels.append((x, y0))
         x += 1
     return pixels
+
+
+class DepositeType(Enum):
+    pass
+
+
+def create_deposit(rect: Rectangle, count: int, deposite_type: DepositeType):
+    grid = Grid.from_rect(rect)
+    c_x = grid.x + int(grid.w / 2)
+    c_y = grid.y + int(grid.h / 2)
+    deposit = []
+
+    t = 1
+    pos = (c_x, c_y)
+    while count > 0:
+        x, y = pos
+
+        mag = math.sqrt(x ** 2 + y ** 2)
+        x_ = x / mag
+        y_ = y / mag
+
+        right = (-y_, x_)
+        left = (y_, -x_)
+        width = 50
+
+        if ((rect.x + rect.w) > x > rect.x) and ((rect.y + rect.h) > y > rect.y):
+            deposit.append((int(x), int(y)))
+
+        for _ in range(int(width / 2)):
+            x0, y0 = int(int(x) + sum([left[0] for __ in range(_ + 1)])), int(
+                int(y) + sum([left[1] for __ in range(_ + 1)]))
+            if ((rect.x + rect.w) > x0 > rect.x) and ((rect.y + rect.h) > y0 > rect.y):
+                grid[x0, y0] = 1
+                deposit.append((x0, y0))
+        for _ in range(int(width / 2)):
+            x0, y0 = int(int(x) + sum([right[0] for __ in range(_ + 1)])), int(
+                int(y) + sum([right[1] for __ in range(_ + 1)]))
+            if ((rect.x + rect.w) > x0 > rect.x) and ((rect.y + rect.h) > y0 > rect.y):
+                grid[x0, y0] = 1
+                deposit.append((x0, y0))
+
+        count -= 1
+        angle = math.sin(t * 0.05)  # TODO angle as function
+
+        pos = x + math.cos(angle), y + math.sin(angle)
+        t += 1
+
+    return deposit
 
 
 Space = Rectangle(0, 0, WIDTH, 1 * HEIGHT / 10)
@@ -571,7 +631,7 @@ class CreateCaveTreeVisitor(TreeVisitor):
         if node.leaf and node.type is None:
             rect = Rectangle(node.x, node.y, node.w, node.h)
 
-            if random.random() > 0.75:
+            if random.random() > 0.2:
                 func = partial(create_cave, rect, ((5, 1),) * 8 + ((5, 8),) * 4,
                                .75)
             else:
@@ -592,7 +652,8 @@ class CreateCaveTreeVisitor(TreeVisitor):
                     return create_water(rect, Grid.from_pixels(rect, result), random.randint(10, 50) / 100)
 
                 def success(pixels):
-                    self.drawer.draw_pixels(pixels, material=Material.LAVA if random.random() > 0.8 else Material.WATER)
+                    self.drawer.draw_pixels(pixels,
+                                            material=Material.LAVA if random.random() > 0.8 else Material.WATER)
 
                 def error(err):
                     raise err
@@ -683,7 +744,19 @@ class MainScene(Scene):
         surface_x = surface_w_offset_left
         surface_y = Space.h + surface_h_offset_top
         Surf = Rectangle(surface_x, surface_y, surface_w, surface_h)
-        self.drawer.draw_pixels(create_surface(Surf, 1, 2, 3, 1, 3, 2, 1, 0.8), Colors.BACKGROUND_UNDERGROUND)
+        self.drawer.draw_pixels(create_surface(
+            Surf,
+            LOWLAND_LEVEL1_COUNT,
+            LOWLAND_LEVEL2_COUNT,
+            LOWLAND_LEVEL3_COUNT,
+            LOWLAND_LEVEL0_COUNT,
+            HILLS_LEVEL1_COUNT,
+            HILLS_LEVEL2_COUNT,
+            HILLS_LEVEL3_COUNT,
+            0.8,
+            octaves=4,
+            persistence=0.12
+        ), Colors.BACKGROUND_UNDERGROUND)
         self.drawer.draw_rect(Rectangle(
             0,
             Space.h + surface_h_offset_top + surface_h - 1,
