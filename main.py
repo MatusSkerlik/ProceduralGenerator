@@ -4,9 +4,10 @@ import random
 import string
 import time
 from abc import abstractmethod, ABC
-from enum import Enum, auto
 from functools import partial
 from typing import Tuple, List, Dict
+
+from enum import Enum, auto
 
 from bsp import TreeVisitor, TreeNode, BSPTree
 
@@ -321,33 +322,37 @@ def create_water(rect: Rectangle, grid: Grid, p: float):
     return water_pixels
 
 
-def create_ocean(rect: Rectangle, left=True, log_base=10):
+def create_ocean(rect: Rectangle, left=True, descent: int = 10):
     """
     Will create ocean into rectangle with log base as function of depth (bigger -> deeper)
     """
+    assert descent > 1
+
     sand_pixels = []
     water_pixels = []
 
     for y in range(rect.h):
-        y0 = (y / (rect.h + 1)) + (1 / log_base)
-        for x0 in range(int(abs(math.log(y0, log_base)) * rect.w)):
-            if left:
-                sand_pixels.append((rect.x + rect.w - x0, rect.y + rect.h - int(y0 * rect.h)))
-            else:
-                sand_pixels.append((rect.x + x0, rect.y + rect.h - int(y0 * rect.h)))
+        y0 = (y / (rect.h + 1)) + (1 / descent)
+        if y0 < 1:  # correction
+            for x0 in range(int(abs(math.log(y0, descent)) * rect.w)):
+                if left:
+                    sand_pixels.append((rect.x - 1 + rect.w - x0, rect.y + rect.h - int(y0 * rect.h)))
+                else:
+                    sand_pixels.append((rect.x + x0, rect.y + rect.h - int(y0 * rect.h)))
 
         # bottom correction
         for x in range(rect.x, rect.x + rect.w):
-            for y in range(rect.y + rect.h - int((1 / log_base) * rect.h), rect.y + rect.h):
+            for y in range(rect.y + rect.h - int((1 / descent) * rect.h), rect.y + rect.h):
                 sand_pixels.append((x, y))
 
     for y in range(rect.h):
-        y0 = (y / (rect.h + 1)) + (1 / log_base)
-        for x0 in range(int(abs(math.log(y0, log_base)) * rect.w), rect.w):
-            if left:
-                water_pixels.append((rect.x + rect.w - (rect.x + x0), rect.y + rect.h - int(y0 * rect.h)))
-            else:
-                water_pixels.append((rect.x + x0, rect.y + rect.h - int(y0 * rect.h)))
+        y0 = (y / (rect.h + 1)) + (1 / descent)
+        if y0 < 1:  # correction
+            for x0 in range(int(abs(math.log(y0, descent)) * rect.w), rect.w):
+                if left:
+                    water_pixels.append((rect.x - 1 + rect.w - (rect.x + x0), rect.y + rect.h - int(y0 * rect.h)))
+                else:
+                    water_pixels.append((rect.x + x0, rect.y + rect.h - int(y0 * rect.h)))
 
     return sand_pixels, water_pixels
 
@@ -414,55 +419,11 @@ def create_surface(rect: Rectangle, l1: int, l2: int, l3: int, b: int, h1: int, 
         for y0 in range(int(rect.y + rect.h - rect.h * y), rect.y + rect.h):
             pixels.append((x, y0))
         x += 1
-    return pixels
 
+    start_y = int(rect.y + rect.h - rect.h * noise[0])
+    end_y = int(rect.y + rect.h - rect.h * noise[len(noise) - 1])
 
-class DepositeType(Enum):
-    pass
-
-
-def create_deposit(rect: Rectangle, count: int, deposite_type: DepositeType):
-    grid = Grid.from_rect(rect)
-    c_x = grid.x + int(grid.w / 2)
-    c_y = grid.y + int(grid.h / 2)
-    deposit = []
-
-    t = 1
-    pos = (c_x, c_y)
-    while count > 0:
-        x, y = pos
-
-        mag = math.sqrt(x ** 2 + y ** 2)
-        x_ = x / mag
-        y_ = y / mag
-
-        right = (-y_, x_)
-        left = (y_, -x_)
-        width = 50
-
-        if ((rect.x + rect.w) > x > rect.x) and ((rect.y + rect.h) > y > rect.y):
-            deposit.append((int(x), int(y)))
-
-        for _ in range(int(width / 2)):
-            x0, y0 = int(int(x) + sum([left[0] for __ in range(_ + 1)])), int(
-                int(y) + sum([left[1] for __ in range(_ + 1)]))
-            if ((rect.x + rect.w) > x0 > rect.x) and ((rect.y + rect.h) > y0 > rect.y):
-                grid[x0, y0] = 1
-                deposit.append((x0, y0))
-        for _ in range(int(width / 2)):
-            x0, y0 = int(int(x) + sum([right[0] for __ in range(_ + 1)])), int(
-                int(y) + sum([right[1] for __ in range(_ + 1)]))
-            if ((rect.x + rect.w) > x0 > rect.x) and ((rect.y + rect.h) > y0 > rect.y):
-                grid[x0, y0] = 1
-                deposit.append((x0, y0))
-
-        count -= 1
-        angle = math.sin(t * 0.05)  # TODO angle as function
-
-        pos = x + math.cos(angle), y + math.sin(angle)
-        t += 1
-
-    return deposit
+    return pixels, start_y, end_y
 
 
 Space = Rectangle(0, 0, WIDTH, 1 * HEIGHT / 10)
@@ -744,7 +705,7 @@ class MainScene(Scene):
         surface_x = surface_w_offset_left
         surface_y = Space.h + surface_h_offset_top
         Surf = Rectangle(surface_x, surface_y, surface_w, surface_h)
-        self.drawer.draw_pixels(create_surface(
+        surface, ocean_left_y, ocean_right_y = create_surface(
             Surf,
             LOWLAND_LEVEL1_COUNT,
             LOWLAND_LEVEL2_COUNT,
@@ -756,28 +717,31 @@ class MainScene(Scene):
             0.8,
             octaves=4,
             persistence=0.12
-        ), Colors.BACKGROUND_UNDERGROUND)
+        )
+        self.drawer.draw_pixels(surface, Colors.BACKGROUND_UNDERGROUND)
         self.drawer.draw_rect(Rectangle(
             0,
             Space.h + surface_h_offset_top + surface_h - 1,
             WIDTH,
             surface_h_offset_bottom + 2
         ), Colors.BACKGROUND_UNDERGROUND)
-        self.drawer.draw_outline(Rectangle(
-            0,
-            Space.h + surface_h_offset_top + surface_h - 1,
-            WIDTH,
-            surface_h_offset_bottom + 2
-        ), RED)
+
+        # self.drawer.draw_outline(Rectangle(
+        #    0,
+        #    Space.h + surface_h_offset_top + surface_h - 1,
+        #    WIDTH,
+        #    surface_h_offset_bottom + 2
+        # ), RED)
 
         sand, water = create_ocean(
-            Rectangle(0, Space.h + Surface.h - surface_h_offset_bottom, surface_w_offset_left, surface_h_offset_bottom))
+            Rectangle(0, ocean_left_y, surface_w_offset_left, Surface.h + (Surface.y - ocean_left_y)),
+            descent=random.randint(2, 10))
         self.drawer.draw_pixels(sand, material=Material.SAND)
         self.drawer.draw_pixels(water, material=Material.WATER)
 
         sand, water = create_ocean(
-            Rectangle(WIDTH - surface_w_offset_right, Space.h + Surface.h - surface_h_offset_bottom,
-                      surface_w_offset_right, surface_h_offset_bottom), left=False)
+            Rectangle(WIDTH - surface_w_offset_right, ocean_right_y, surface_w_offset_right,
+                      Surface.h + (Surface.y - ocean_right_y)), left=False, descent=random.randint(4, 10))
         self.drawer.draw_pixels(sand, material=Material.SAND)
         self.drawer.draw_pixels(water, material=Material.WATER)
 
