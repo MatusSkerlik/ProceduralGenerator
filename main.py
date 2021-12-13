@@ -5,7 +5,7 @@ import string
 import time
 from abc import abstractmethod, ABC
 from functools import partial
-from typing import Tuple, List, Dict
+from typing import Tuple, List, Dict, Union
 
 from enum import Enum, auto
 
@@ -121,33 +121,62 @@ class Rectangle:
 
 class Grid:
 
-    def __init__(self, x: int, y: int, w: int, h: int, default_state: int = 0):
+    def __init__(self, x: int, y: int, w: int, h: int, default_state: int = 0, locked_state: int = 0):
         self.x = x
         self.y = y
         self.w = w
         self.h = h
         self._array = [default_state for _ in range(w * h)]
+        self._locked = {}
+        self._locked_state = locked_state
 
     def __setitem__(self, key, value):
         x, y = key
-        self._array[(y - self.y) * self.w + (x - self.x)] = value
+        if (x, y) in self._locked:
+            pass
+        else:
+            self._array[(y - self.y) * self.w + (x - self.x)] = value
 
     def __getitem__(self, item):
         x, y = item
-        return self._array[(y - self.y) * self.w + (x - self.x)]
+        if (x, y) in self._locked:
+            return self._locked_state
+        else:
+            return self._array[(y - self.y) * self.w + (x - self.x)]
 
     def __iter__(self):
         return itertools.product(range(self.x, self.x + self.w), range(self.y, self.y + self.h))
 
-    @staticmethod
-    def from_rect(rect: Rectangle, state: int = 0):
-        return Grid(rect.x, rect.y, rect.w, rect.h, state)
+    def lock(self, state: int):
+        for x, y in self:
+            if self[x, y] == state:
+                self._locked[(x, y)] = True
+
+    def unlock(self, state):
+        for x, y in self:
+            if self[x, y] == state:
+                del self._locked[(x, y)]
+
+    def lock_all(self):
+        self._locked = {(x, y): True for x, y in self}
+
+    def unlock_all(self):
+        self._locked = {}
+
+    def is_locked(self, x: int, y: int):
+        return (x, y) in self._locked
 
     @staticmethod
-    def from_pixels(rect: Rectangle, pixels, state: int = 1):
-        grid = Grid.from_rect(rect)
+    def from_rect(rect: Rectangle, default_state: int = 0):
+        return Grid(rect.x, rect.y, rect.w, rect.h, default_state)
+
+    @staticmethod
+    def from_pixels(rect: Rectangle, pixels, state: int = 1, lock=False, default_state: int = 0):
+        grid = Grid.from_rect(rect, default_state)
         for x, y in pixels:
             grid[x, y] = state
+        if lock:
+            grid.lock(state)
         return grid
 
 
@@ -272,16 +301,26 @@ def create_grass(rect: Rectangle, grid: Grid, air_state: int, wall_state: int):
     return grass_pixels
 
 
-def create_cave(rect: Rectangle, config_seq: Tuple[Tuple[int, int], ...], birth_chance: float):
-    grid = Grid.from_rect(rect)
+def create_cave(rect: Union[Rectangle, Grid], config_seq: Tuple[Tuple[int, int], ...], birth_chance: float,
+                min_size: int = 75):
+    if isinstance(rect, Rectangle):
+        grid = Grid.from_rect(rect)
+    else:
+        grid = rect
 
-    for x, y in rect:
+    # optimization to not traverse coords that are locked
+    if isinstance(rect, Grid):
+        unlocked = [(x, y) for x, y in grid if not grid.is_locked(x, y)]
+    else:
+        unlocked = grid
+
+    for x, y in unlocked:
         grid[x, y] = 1 if random.random() > birth_chance else 0
 
     for step in range(len(config_seq)):
         death_limit, birth_limit = config_seq[step]
         updated_grid = Grid.from_rect(rect)
-        for x, y in grid:
+        for x, y in unlocked:
             alive = len([True for _ in nbs_moore(x, y, grid) if _ == 1])
 
             if grid[x, y] == 1:
@@ -296,14 +335,15 @@ def create_cave(rect: Rectangle, config_seq: Tuple[Tuple[int, int], ...], birth_
                     updated_grid[x, y] = 0
         grid = updated_grid
 
-    visited = {}
-    for x, y in grid:
-        if (x, y) not in visited:
-            cells, newly_visited = flood_fill(x, y, 1, grid)
-            visited.update(newly_visited)
-            if len(cells) < 75:
-                for x0, y0 in cells:
-                    grid[x0, y0] = 0
+    if min_size > 0:
+        visited = {}
+        for x, y in unlocked:
+            if (x, y) not in visited:
+                cells, newly_visited = flood_fill(x, y, 1, grid)
+                visited.update(newly_visited)
+                if len(cells) < min_size:
+                    for x0, y0 in cells:
+                        grid[x0, y0] = 0
 
     return [(x, y) for x, y in grid if grid[x, y] == 1]
 
@@ -695,6 +735,7 @@ class MainScene(Scene):
             self.drawer.draw_outline(Underworld, MAGENTA)
             tree.traverse(DrawTreeVisitor(self.drawer))
 
+        # CREATE SURFACE
         surface_w_offset_left = 0.075 * WIDTH
         surface_w_offset_right = 0.075 * WIDTH
         surface_w = WIDTH - surface_w_offset_right - surface_w_offset_right
@@ -726,28 +767,62 @@ class MainScene(Scene):
             surface_h_offset_bottom + 2
         ), Colors.BACKGROUND_UNDERGROUND)
 
-        # self.drawer.draw_outline(Rectangle(
-        #    0,
-        #    Space.h + surface_h_offset_top + surface_h - 1,
-        #    WIDTH,
-        #    surface_h_offset_bottom + 2
-        # ), RED)
+        # CREATE OCEAN
+        def success(result):
+            sand, water = result
+            self.drawer.draw_pixels(sand, material=Material.SAND)
+            self.drawer.draw_pixels(water, material=Material.WATER)
 
-        sand, water = create_ocean(
-            Rectangle(0, ocean_left_y, surface_w_offset_left, Surface.h + (Surface.y - ocean_left_y)),
-            descent=random.randint(2, 10))
-        self.drawer.draw_pixels(sand, material=Material.SAND)
-        self.drawer.draw_pixels(water, material=Material.WATER)
+        def error(err):
+            raise err
 
-        sand, water = create_ocean(
-            Rectangle(WIDTH - surface_w_offset_right, ocean_right_y, surface_w_offset_right,
-                      Surface.h + (Surface.y - ocean_right_y)), left=False, descent=random.randint(4, 10))
-        self.drawer.draw_pixels(sand, material=Material.SAND)
-        self.drawer.draw_pixels(water, material=Material.WATER)
+        parallel.to_process(partial(create_ocean,
+                                    Rectangle(0, ocean_left_y, surface_w_offset_left,
+                                              Surface.h + (Surface.y - ocean_left_y)),
+                                    True, random.randint(2, 10)), success, error)
 
+        parallel.to_process(partial(create_ocean,
+                                    Rectangle(WIDTH - surface_w_offset_right, ocean_right_y,
+                                              surface_w_offset_right, Surface.h + (Surface.y - ocean_right_y)),
+                                    False, random.randint(4, 10)), success, error)
+
+        # CREATE DEPOSIT STONE
+        def success(pixels):
+            self.drawer.draw_pixels(pixels, Colors.BACKGROUND_CAVERN)
+
+        def error(err):
+            raise err
+
+        Surf = Rectangle(surface_w_offset_left, Surface.y, WIDTH - - surface_w_offset_right - surface_w_offset_left,
+                         Surface.h)
+        surface_grid = Grid.from_pixels(Surf, surface, 1, False)
+        for x, y in Rectangle(surface_w_offset_left, Surface.y + Surface.h - surface_h_offset_bottom,
+                              WIDTH - surface_w_offset_right - surface_w_offset_left, surface_h_offset_bottom):
+            surface_grid[x, y] = 1
+        surface_grid.lock(0)
+        parallel.to_process(partial(create_cave, surface_grid, ((5, 1),) * 4 + ((5, 8),) * 4, 0.75, 50), success, error)
+
+        # CREATE DEPOSIT COPPER
+        def success(pixels):
+            self.drawer.draw_pixels(pixels, Colors.COPPER)
+
+        def error(err):
+            raise err
+
+        Surf = Rectangle(surface_w_offset_left, Surface.y, WIDTH - - surface_w_offset_right - surface_w_offset_left,
+                         Surface.h)
+        surface_grid = Grid.from_pixels(Surf, surface, 1, False)
+        for x, y in Rectangle(surface_w_offset_left, Surface.y + Surface.h - surface_h_offset_bottom,
+                              WIDTH - surface_w_offset_right - surface_w_offset_left, surface_h_offset_bottom):
+            surface_grid[x, y] = 1
+        surface_grid.lock(0)
+        parallel.to_process(partial(create_cave, surface_grid, ((5, 1),) * 3 + ((5, 8),) * 3, 0.75, 20), success, error)
+
+        # CREATE CAVES
         cave_tree_visitor = CreateCaveTreeVisitor(self.drawer)
         tree.traverse(cave_tree_visitor)
 
+        # CREATE GRASS
         def success(grid):
             pixels = create_grass(Surface, grid, 0, 1)
             self.drawer.draw_pixels(pixels, Colors.GRASS)
@@ -755,7 +830,11 @@ class MainScene(Scene):
         def error(err):
             raise err
 
-        parallel.to_thread(partial(make_grid, Surface, SURFACE, {Material.BACKGROUND: 0}, 1), success, error)
+        parallel.to_thread(partial(make_grid, Surface, SURFACE, {
+            Material.BACKGROUND: 0,
+            Material.SAND: 0,
+            Material.WATER: 0
+        }, 1), success, error)
 
         self.drawer.draw_progress("Done ...")
         self.drawer.free()
