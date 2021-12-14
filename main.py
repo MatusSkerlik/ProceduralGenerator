@@ -2,17 +2,12 @@ import itertools
 import math
 import random
 import string
-import time
-from abc import abstractmethod, ABC
+from enum import Enum, auto
 from functools import partial
 from typing import Tuple, List, Dict, Union
 
-from enum import Enum, auto
-
-from bsp import TreeVisitor, TreeNode, BSPTree
-
-WIDTH = 1280
-HEIGHT = 800
+WIDTH = 800
+HEIGHT = 600
 HILLS_LEVEL1_COUNT = 1
 HILLS_LEVEL2_COUNT = 3
 HILLS_LEVEL3_COUNT = 2
@@ -505,345 +500,308 @@ class PixelMaterialColorMap:
         return cls._map[(x, y)]
 
 
-class RegionType(Enum):
-    CAVE = auto()
-    ORE = auto()
+if __name__ == '__main__':
+    import parallel
+    import pygame
+    import time
+    from bsp import TreeVisitor, TreeNode, BSPTree
 
 
-class PygameDrawer:
-    """ Drawing interface """
-
-    def __init__(self):
-        self.running = False
-        self._font = None
-
-    def _handle_events(self):
-        global SURFACE
-
-        for event in pygame.event.get():
-            if event.type == pygame.QUIT or (event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE):
-                name = ''.join(random.choice(string.ascii_lowercase) for _ in range(10))
-                pygame.image.save(SURFACE, "img/" + name + ".png")
-                pygame.quit()
-                pygame.font.quit()
-                signal.raise_signal(signal.SIGINT)
-                break
-
-    def init(self):
-        global WIDTH, HEIGHT, SURFACE
-
+    class Draw:
+        """ Drawing interface """
         pygame.init()
         pygame.font.init()
-        SURFACE = pygame.display.set_mode([WIDTH, HEIGHT])
-        self._font = pygame.font.Font("font.ttf", 12)
+        surface = pygame.display.set_mode([WIDTH, HEIGHT])
 
-    def free(self):
-        while True:
-            time.sleep(1 / 60)
-            self._handle_events()
+        def __init__(self):
+            raise NotImplemented
 
-    def draw_rect(self, rect: Rectangle, color: Color = None):
-        global SURFACE
+        @staticmethod
+        def loop():
+            for event in pygame.event.get():
+                if event.type == pygame.QUIT or (event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE):
+                    name = ''.join(random.choice(string.ascii_lowercase) for _ in range(10))
+                    pygame.image.save(Draw.surface, "img/" + name + ".png")
+                    pygame.quit()
+                    pygame.font.quit()
+                    return False
+            return True
 
-        x, y, x1, y1 = rect.get_rect()
-        if color is not None:
-            pygame.draw.rect(SURFACE, color, (x, y, x1, y1))
-        else:
-            for x0 in range(x, x1):
-                for y0 in range(y, y1):
-                    color = PixelMaterialColorMap.get_color(x0, y0, Material.BACKGROUND)
-                    pygame.draw.rect(SURFACE, color, (x0, y0, 1, 1))
-        pygame.display.update((x, y, x1, y1))
-        self._handle_events()
+        @staticmethod
+        def rect(rect: Rectangle, color: Color = None):
+            global SURFACE
 
-    def draw_outline(self, rect: Rectangle, color: Color):
-        global SURFACE
+            x, y, x1, y1 = rect.get_rect()
+            if color is not None:
+                pygame.draw.rect(Draw.surface, color, (x, y, x1, y1))
+            else:
+                for x0 in range(x, x1):
+                    for y0 in range(y, y1):
+                        color = PixelMaterialColorMap.get_color(x0, y0, Material.BACKGROUND)
+                        pygame.draw.rect(Draw.surface, color, (x0, y0, 1, 1))
+            pygame.display.update((x, y, x1, y1))
 
-        x, y, x1, y1 = rect.get_rect()
-        pygame.draw.rect(SURFACE, color, (x, y, x1, y1), 1)
-        pygame.display.update((x, y, x1, y1))
-        self._handle_events()
+        @staticmethod
+        def outline(rect: Rectangle, color: Color):
+            global SURFACE
 
-    def draw_pixels(self, pixels, color: Color = None, material: Material = None):
-        global SURFACE
+            x, y, x1, y1 = rect.get_rect()
+            pygame.draw.rect(Draw.surface, color, (x, y, x1, y1), 1)
+            pygame.display.update((x, y, x1, y1))
 
-        for x, y in pixels:
-            if color is None:
-                if material is None:
-                    c = PixelMaterialColorMap.get_color(x, y, Material.BACKGROUND)
+        @staticmethod
+        def pixels(pixels, color: Color = None, material: Material = None):
+            global SURFACE
+
+            for x, y in pixels:
+                if color is None:
+                    if material is None:
+                        c = PixelMaterialColorMap.get_color(x, y, Material.BACKGROUND)
+                    else:
+                        c = PixelMaterialColorMap.get_color(x, y, material)
+                    pygame.draw.rect(Draw.surface, c, (x, y, 1, 1))
                 else:
-                    c = PixelMaterialColorMap.get_color(x, y, material)
-                pygame.draw.rect(SURFACE, c, (x, y, 1, 1))
-            else:
-                pygame.draw.rect(SURFACE, color, (x, y, 1, 1))
-        pygame.display.update(get_bounding_rect(pixels).get_rect())
-        self._handle_events()
+                    pygame.draw.rect(Draw.surface, color, (x, y, 1, 1))
+            pygame.display.update(get_bounding_rect(pixels).get_rect())
 
-    def draw_polygon(self, points: Tuple[Tuple[int, int], ...], color: Tuple[int, int, int]):
-        global SURFACE
+        @staticmethod
+        def polygon(points: Tuple[Tuple[int, int], ...], color: Tuple[int, int, int]):
+            pygame.draw.polygon(Draw.surface, color, points)
 
-        pygame.draw.polygon(SURFACE, color, points)
+            sx = None
+            sy = None
+            bx = None
+            by = None
+            for point in points:
+                x, y = point
+                if sx is None:
+                    sx = x
+                elif sx > x:
+                    sx = x
 
-        sx = None
-        sy = None
-        bx = None
-        by = None
-        for point in points:
-            x, y = point
-            if sx is None:
-                sx = x
-            elif sx > x:
-                sx = x
+                if sy is None:
+                    sy = y
+                elif sy > y:
+                    sy = y
 
-            if sy is None:
-                sy = y
-            elif sy > y:
-                sy = y
+                if bx is None:
+                    bx = x
+                elif bx < x:
+                    bx = x
 
-            if bx is None:
-                bx = x
-            elif bx < x:
-                bx = x
+                if by is None:
+                    by = y
+                elif by < y:
+                    by = y
 
-            if by is None:
-                by = y
-            elif by < y:
-                by = y
-
-        pygame.display.update((sx, sy, bx - sx, by - sy))
-        self._handle_events()
-
-    def draw_progress(self, text: string):
-        global WIDTH, HEIGHT, SURFACE
-
-        pygame.draw.rect(SURFACE, (0, 128, 128), (0, HEIGHT, WIDTH, HEIGHT + 64))
-        font = self._font.render(text, False, (255, 255, 255))
-        SURFACE.blit(font, (4, HEIGHT + 4))
-        pygame.display.update((0, HEIGHT, WIDTH, HEIGHT))
-        self._handle_events()
+            pygame.display.update((sx, sy, bx - sx, by - sy))
 
 
-class CreateCaveTreeVisitor(TreeVisitor):
+    class NodeType(Enum):
+        """ Types of BSP tree nodes """
+        CAVE = auto()
+        ORE = auto()
 
-    def __init__(self, drawer: PygameDrawer):
-        self.drawer = drawer
 
-    def visit(self, node: TreeNode):
-        if node.leaf and node.type is None:
-            rect = Rectangle(node.x, node.y, node.w, node.h)
+    class CreateCaveTreeVisitor(TreeVisitor):
+        """ Visit BSP Tree and generate caves """
 
-            if random.random() > 0.2:
-                func = partial(create_cave, rect, ((5, 1),) * 8 + ((5, 8),) * 4,
-                               .75)
-            else:
-                func = partial(create_cave, rect, ((3, 4),) * 2 + ((4, 4),) * 2,
-                               .575)
+        def visit(self, node: TreeNode):
+            if node.leaf and node.type is None:
+                rect = Rectangle(node.x, node.y, node.w, node.h)
 
-            def success(pixels):
-                self.drawer.draw_pixels(pixels, material=Material.CAVE_BACKGROUND)
-
-            def error(err):
-                raise err
-
-            token = parallel.get_token()
-            parallel.to_process(func, success, error, token)
-
-            if random.random() > 0.8:  # fill caves with water
-                def func(result):
-                    return create_water(rect, Grid.from_pixels(rect, result), random.randint(10, 50) / 100)
+                if random.random() > 0.2:
+                    func = partial(create_cave, rect, ((5, 1),) * 8 + ((5, 8),) * 4,
+                                   .75)
+                else:
+                    func = partial(create_cave, rect, ((3, 4),) * 2 + ((4, 4),) * 2,
+                                   .575)
 
                 def success(pixels):
-                    self.drawer.draw_pixels(pixels,
-                                            material=Material.LAVA if random.random() > 0.8 else Material.WATER)
+                    Draw.pixels(pixels, material=Material.CAVE_BACKGROUND)
 
                 def error(err):
                     raise err
 
-                parallel.to_thread_after(func, success, error, wait_token=token)
+                token = parallel.get_token()
+                parallel.to_process(func, success, error, token)
 
-            node.type = RegionType.CAVE
+                if random.random() > 0.8:  # fill caves with water
+                    def func(result):
+                        return create_water(rect, Grid.from_pixels(rect, result), random.randint(10, 50) / 100)
 
+                    def success(pixels):
+                        Draw.pixels(pixels, material=Material.LAVA if random.random() > 0.8 else Material.WATER)
 
-class DrawTreeVisitor(TreeVisitor):
-    """ Traverse tree and draw leaf nodes """
+                    def error(err):
+                        raise err
 
-    def __init__(self, drawer: PygameDrawer):
-        self._drawer = drawer
+                    parallel.to_thread_after(func, success, error, wait_token=token)
 
-    def visit(self, node: TreeNode):
-        if node.leaf:
-            self._drawer.draw_outline(Rectangle(node.x, node.y, node.w, node.h), RED)
-
-
-class Scene(ABC):
-    """ Generation scene """
-    drawer: PygameDrawer
-
-    @abstractmethod
-    def run(self):
-        pass
+                node.type = NodeType.CAVE
 
 
-class MainScene(Scene):
+    class DrawTreeVisitor(TreeVisitor):
+        """ Traverse tree and draw leaf nodes """
 
-    def __init__(self):
-        self.drawer = PygameDrawer()
-
-    def run(self):
-        global WIDTH, HEIGHT, DEBUG
-
-        tree = BSPTree(0, Underground.y, WIDTH, Underground.h + Cavern.h)
-        tree.grow(8)
-
-        PixelMaterialColorMap.add_rect(Space, {
-            Material.BACKGROUND: Colors.BACKGROUND_SPACE,
-        })
-
-        PixelMaterialColorMap.add_rect(Surface, {
-            Material.BACKGROUND: Colors.BACKGROUND_SURFACE,
-            Material.CAVE_BACKGROUND: Colors.DIRT
-        })
-
-        PixelMaterialColorMap.add_rect(Underground, {
-            Material.BACKGROUND: Colors.BACKGROUND_UNDERGROUND,
-            Material.CAVE_BACKGROUND: Colors.DIRT
-        })
-
-        PixelMaterialColorMap.add_rect(Cavern, {
-            Material.BACKGROUND: Colors.BACKGROUND_CAVERN,
-            Material.CAVE_BACKGROUND: Colors.STONE
-        })
-
-        PixelMaterialColorMap.add_rect(Underworld, {
-            Material.BACKGROUND: Colors.BACKGROUND_UNDERWORLD,
-            Material.CAVE_BACKGROUND: Colors.STONE
-        })
-
-        self.drawer.init()
-        self.drawer.draw_progress("Init ...")
-        self.drawer.draw_rect(Space, Colors.BACKGROUND_SURFACE)
-        self.drawer.draw_rect(Surface, Colors.BACKGROUND_SURFACE)
-        self.drawer.draw_rect(Underground, Colors.BACKGROUND_UNDERGROUND)
-        self.drawer.draw_rect(Cavern, Colors.BACKGROUND_CAVERN)
-        self.drawer.draw_rect(Underworld, Colors.BACKGROUND_UNDERWORLD)
-
-        if DEBUG:
-            self.drawer.draw_outline(Space, MAGENTA)
-            self.drawer.draw_outline(Surface, MAGENTA)
-            self.drawer.draw_outline(Underground, MAGENTA)
-            self.drawer.draw_outline(Cavern, MAGENTA)
-            self.drawer.draw_outline(Underworld, MAGENTA)
-            tree.traverse(DrawTreeVisitor(self.drawer))
-
-        # CREATE SURFACE
-        surface_w_offset_left = 0.075 * WIDTH
-        surface_w_offset_right = 0.075 * WIDTH
-        surface_w = WIDTH - surface_w_offset_right - surface_w_offset_right
-        SURFACE_H = Surface.h
-        surface_h_offset_bottom = 0.25 * SURFACE_H
-        surface_h_offset_top = 0.35 * SURFACE_H
-        surface_h = SURFACE_H - surface_h_offset_bottom - surface_h_offset_top
-        surface_x = surface_w_offset_left
-        surface_y = Space.h + surface_h_offset_top
-        Surf = Rectangle(surface_x, surface_y, surface_w, surface_h)
-        surface, ocean_left_y, ocean_right_y = create_surface(
-            Surf,
-            LOWLAND_LEVEL1_COUNT,
-            LOWLAND_LEVEL2_COUNT,
-            LOWLAND_LEVEL3_COUNT,
-            LOWLAND_LEVEL0_COUNT,
-            HILLS_LEVEL1_COUNT,
-            HILLS_LEVEL2_COUNT,
-            HILLS_LEVEL3_COUNT,
-            0.8,
-            octaves=4,
-            persistence=0.12
-        )
-        self.drawer.draw_pixels(surface, Colors.BACKGROUND_UNDERGROUND)
-        self.drawer.draw_rect(Rectangle(
-            0,
-            Space.h + surface_h_offset_top + surface_h - 1,
-            WIDTH,
-            surface_h_offset_bottom + 2
-        ), Colors.BACKGROUND_UNDERGROUND)
-
-        # CREATE OCEAN
-        def success(result):
-            sand, water = result
-            self.drawer.draw_pixels(sand, material=Material.SAND)
-            self.drawer.draw_pixels(water, material=Material.WATER)
-
-        def error(err):
-            raise err
-
-        parallel.to_process(partial(create_ocean,
-                                    Rectangle(0, ocean_left_y, surface_w_offset_left,
-                                              Surface.h + (Surface.y - ocean_left_y)),
-                                    True, random.randint(2, 10)), success, error)
-
-        parallel.to_process(partial(create_ocean,
-                                    Rectangle(WIDTH - surface_w_offset_right, ocean_right_y,
-                                              surface_w_offset_right, Surface.h + (Surface.y - ocean_right_y)),
-                                    False, random.randint(4, 10)), success, error)
-
-        # CREATE DEPOSIT STONE
-        def success(pixels):
-            self.drawer.draw_pixels(pixels, Colors.BACKGROUND_CAVERN)
-
-        def error(err):
-            raise err
-
-        Surf = Rectangle(surface_w_offset_left, Surface.y, WIDTH - - surface_w_offset_right - surface_w_offset_left,
-                         Surface.h)
-        surface_grid = Grid.from_pixels(Surf, surface, 1, False)
-        for x, y in Rectangle(surface_w_offset_left, Surface.y + Surface.h - surface_h_offset_bottom,
-                              WIDTH - surface_w_offset_right - surface_w_offset_left, surface_h_offset_bottom):
-            surface_grid[x, y] = 1
-        surface_grid.lock(0)
-        parallel.to_process(partial(create_cave, surface_grid, ((5, 1),) * 4 + ((5, 8),) * 4, 0.75, 50), success, error)
-
-        # CREATE DEPOSIT COPPER
-        def success(pixels):
-            self.drawer.draw_pixels(pixels, Colors.COPPER)
-
-        def error(err):
-            raise err
-
-        Surf = Rectangle(surface_w_offset_left, Surface.y, WIDTH - - surface_w_offset_right - surface_w_offset_left,
-                         Surface.h)
-        surface_grid = Grid.from_pixels(Surf, surface, 1, False)
-        for x, y in Rectangle(surface_w_offset_left, Surface.y + Surface.h - surface_h_offset_bottom,
-                              WIDTH - surface_w_offset_right - surface_w_offset_left, surface_h_offset_bottom):
-            surface_grid[x, y] = 1
-        surface_grid.lock(0)
-        parallel.to_process(partial(create_cave, surface_grid, ((5, 1),) * 3 + ((5, 8),) * 3, 0.75, 20), success, error)
-
-        # CREATE CAVES
-        cave_tree_visitor = CreateCaveTreeVisitor(self.drawer)
-        tree.traverse(cave_tree_visitor)
-
-        # CREATE GRASS
-        def success(grid):
-            pixels = create_grass(Surface, grid, 0, 1)
-            self.drawer.draw_pixels(pixels, Colors.GRASS)
-
-        def error(err):
-            raise err
-
-        parallel.to_thread(partial(make_grid, Surface, SURFACE, {
-            Material.BACKGROUND: 0,
-            Material.SAND: 0,
-            Material.WATER: 0
-        }, 1), success, error)
-
-        self.drawer.draw_progress("Done ...")
-        self.drawer.free()
+        def visit(self, node: TreeNode):
+            if node.leaf:
+                Draw.outline(Rectangle(node.x, node.y, node.w, node.h), RED)
 
 
-if __name__ == '__main__':
-    import pygame
-    import parallel
-    import signal
+    class MainScene:
+        """ Namespace for generation of everything """
 
-    scene = MainScene()
-    scene.run()
+        @staticmethod
+        def run():
+            global WIDTH, HEIGHT, DEBUG
+
+            tree = BSPTree(0, Underground.y, WIDTH, Underground.h + Cavern.h)
+            tree.grow(8)
+
+            PixelMaterialColorMap.add_rect(Space, {
+                Material.BACKGROUND: Colors.BACKGROUND_SPACE,
+            })
+
+            PixelMaterialColorMap.add_rect(Surface, {
+                Material.BACKGROUND: Colors.BACKGROUND_SURFACE,
+                Material.CAVE_BACKGROUND: Colors.DIRT
+            })
+
+            PixelMaterialColorMap.add_rect(Underground, {
+                Material.BACKGROUND: Colors.BACKGROUND_UNDERGROUND,
+                Material.CAVE_BACKGROUND: Colors.DIRT
+            })
+
+            PixelMaterialColorMap.add_rect(Cavern, {
+                Material.BACKGROUND: Colors.BACKGROUND_CAVERN,
+                Material.CAVE_BACKGROUND: Colors.STONE
+            })
+
+            PixelMaterialColorMap.add_rect(Underworld, {
+                Material.BACKGROUND: Colors.BACKGROUND_UNDERWORLD,
+                Material.CAVE_BACKGROUND: Colors.STONE
+            })
+
+            Draw.rect(Space, Colors.BACKGROUND_SURFACE)
+            Draw.rect(Surface, Colors.BACKGROUND_SURFACE)
+            Draw.rect(Underground, Colors.BACKGROUND_UNDERGROUND)
+            Draw.rect(Cavern, Colors.BACKGROUND_CAVERN)
+            Draw.rect(Underworld, Colors.BACKGROUND_UNDERWORLD)
+
+            if DEBUG:
+                Draw.outline(Space, MAGENTA)
+                Draw.outline(Surface, MAGENTA)
+                Draw.outline(Underground, MAGENTA)
+                Draw.outline(Cavern, MAGENTA)
+                Draw.outline(Underworld, MAGENTA)
+                tree.traverse(DrawTreeVisitor())
+
+            # CREATE SURFACE
+            surface_w_offset_left = 0.075 * WIDTH
+            surface_w_offset_right = 0.075 * WIDTH
+            surface_w = WIDTH - surface_w_offset_right - surface_w_offset_right
+            SURFACE_H = Surface.h
+            surface_h_offset_bottom = 0.25 * SURFACE_H
+            surface_h_offset_top = 0.35 * SURFACE_H
+            surface_h = SURFACE_H - surface_h_offset_bottom - surface_h_offset_top
+            surface_x = surface_w_offset_left
+            surface_y = Space.h + surface_h_offset_top
+            Surf = Rectangle(surface_x, surface_y, surface_w, surface_h)
+            surface, ocean_left_y, ocean_right_y = create_surface(
+                Surf,
+                LOWLAND_LEVEL1_COUNT,
+                LOWLAND_LEVEL2_COUNT,
+                LOWLAND_LEVEL3_COUNT,
+                LOWLAND_LEVEL0_COUNT,
+                HILLS_LEVEL1_COUNT,
+                HILLS_LEVEL2_COUNT,
+                HILLS_LEVEL3_COUNT,
+                0.8,
+                octaves=4,
+                persistence=0.12
+            )
+            Draw.pixels(surface, Colors.BACKGROUND_UNDERGROUND)
+            Draw.rect(Rectangle(
+                0,
+                Space.h + surface_h_offset_top + surface_h - 1,
+                WIDTH,
+                surface_h_offset_bottom + 2
+            ), Colors.BACKGROUND_UNDERGROUND)
+
+            # CREATE OCEAN
+            def success(result):
+                sand, water = result
+                Draw.pixels(sand, material=Material.SAND)
+                Draw.pixels(water, material=Material.WATER)
+
+            def error(err):
+                raise err
+
+            parallel.to_process(partial(create_ocean,
+                                        Rectangle(0, ocean_left_y, surface_w_offset_left,
+                                                  Surface.h + (Surface.y - ocean_left_y)),
+                                        True, random.randint(2, 10)), success, error)
+
+            parallel.to_process(partial(create_ocean,
+                                        Rectangle(WIDTH - surface_w_offset_right, ocean_right_y,
+                                                  surface_w_offset_right, Surface.h + (Surface.y - ocean_right_y)),
+                                        False, random.randint(4, 10)), success, error)
+
+            # CREATE DEPOSIT STONE
+            def success(pixels):
+                Draw.pixels(pixels, Colors.BACKGROUND_CAVERN)
+
+            def error(err):
+                raise err
+
+            Surf = Rectangle(surface_w_offset_left, Surface.y, WIDTH - surface_w_offset_right - surface_w_offset_left,
+                             Surface.h)
+            surface_grid = Grid.from_pixels(Surf, surface, 1, False)
+            for x, y in Rectangle(surface_w_offset_left, Surface.y + Surface.h - surface_h_offset_bottom,
+                                  WIDTH - surface_w_offset_right - surface_w_offset_left, surface_h_offset_bottom):
+                surface_grid[x, y] = 1
+            surface_grid.lock(0)
+            parallel.to_process(partial(create_cave, surface_grid, ((5, 1),) * 4 + ((5, 8),) * 4, 0.75, 50), success,
+                                error)
+
+            # CREATE DEPOSIT COPPER
+            def success(pixels):
+                Draw.pixels(pixels, Colors.COPPER)
+
+            def error(err):
+                raise err
+
+            Surf = Rectangle(surface_w_offset_left, Surface.y, WIDTH - surface_w_offset_right - surface_w_offset_left,
+                             Surface.h)
+            surface_grid = Grid.from_pixels(Surf, surface, 1, False)
+            for x, y in Rectangle(surface_w_offset_left, Surface.y + Surface.h - surface_h_offset_bottom,
+                                  WIDTH - surface_w_offset_right - surface_w_offset_left, surface_h_offset_bottom):
+                surface_grid[x, y] = 1
+            surface_grid.lock(0)
+            parallel.to_process(partial(create_cave, surface_grid, ((5, 1),) * 3 + ((5, 8),) * 3, 0.75, 20), success,
+                                error)
+
+            # CREATE CAVES
+            tree.traverse(CreateCaveTreeVisitor())
+
+            # CREATE GRASS
+            def success(grid):
+                pixels = create_grass(Surface, grid, 0, 1)
+                Draw.pixels(pixels, Colors.GRASS)
+
+            def error(err):
+                raise err
+
+            parallel.to_thread(partial(make_grid, Surface, SURFACE, {
+                Material.BACKGROUND: 0,
+                Material.SAND: 0,
+                Material.WATER: 0
+            }, 1), success, error)
+
+
+    parallel.init()
+    MainScene.run()
+    while Draw.loop():
+        time.sleep(1 / 30)
+    parallel.clean()

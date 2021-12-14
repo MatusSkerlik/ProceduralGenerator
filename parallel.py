@@ -1,6 +1,5 @@
 import multiprocessing
 import random
-import signal
 import string
 import time
 from collections import deque
@@ -37,13 +36,16 @@ def get_token():
     return ''.join(random.choice(string.ascii_lowercase) for _ in range(10))
 
 
+_to_thread_worker_running = True
+
+
 class _ToThreadWorker(Thread):
     name = 'ToThreadWorker'
 
     def run(self) -> None:
         global _last_tick
 
-        while True:
+        while _to_thread_worker_running:
             if len(_to_thread_queue) > 0:
                 current_tick = time.monotonic_ns()
                 if (current_tick - _last_tick) < THREAD_TIME:
@@ -63,12 +65,14 @@ class _ToThreadWorker(Thread):
                 time.sleep(1 / FPS)
 
 
+_after_token_worker_running = True
+
+
 class _AfterTokenWorker(Thread):
     name = 'AfterTokenWorker'
 
     def run(self) -> None:
-        while True:
-
+        while _after_token_worker_running:
             try:
                 with _succ_tasks_lock:
                     for task_token, result in _succ_tasks:
@@ -114,8 +118,8 @@ class _AfterTokenWorker(Thread):
             time.sleep(1 / FPS)
 
 
-_ToThreadWorker().start()
-del _ToThreadWorker
+_to_thread_worker = None
+_after_token_worker = None
 
 
 def to_thread(func, success_callback, error_callback, token=get_token()):
@@ -140,10 +144,6 @@ def to_thread(func, success_callback, error_callback, token=get_token()):
 
     # THIS IS CALLED IN MAIN THREAD
     _to_thread_queue.append((func, after_success, after_err))
-
-
-_AfterTokenWorker().start()
-del _AfterTokenWorker
 
 
 def to_thread_after(func, success_callback, error_callback, wait_token, token=get_token()):
@@ -180,10 +180,6 @@ def to_process(func, success_callback, error_callback, token=get_token()):
             _err_tasks.append((token, error))
         error_callback(error)
 
-    # THIS IS CALLED IN MAIN THREAD
-    if _process_pool is None:
-        _process_pool = multiprocessing.Pool(processes=4)
-
     _process_pool.apply_async(func, callback=after_success, error_callback=after_err)
 
 
@@ -198,14 +194,38 @@ def to_process_after(func, success_callback, error_callback, wait_token, token=g
         _after_token_tasks_to_process[wait_token] = q
 
 
-def __exit_program(*args):
-    global to_thread_worker_running, _process_pool
-    to_thread_worker_running = False
+def init():
+    global _process_pool, _to_thread_worker, _after_token_worker
+    if _process_pool is None:
+        _process_pool = multiprocessing.Pool()
+    if _to_thread_worker is None:
+        global _to_thread_worker_running
+        _to_thread_worker_running = True
+
+        _to_thread_worker = _ToThreadWorker()
+        _to_thread_worker.daemon = True
+        _to_thread_worker.start()
+    if _after_token_worker is None:
+        global _after_token_worker_running
+        _after_token_worker_running = True
+
+        _after_token_worker = _AfterTokenWorker()
+        _after_token_worker.deamon = True
+        _after_token_worker.start()
+
+
+def clean():
+    global _process_pool, _to_thread_worker, _after_token_worker
     if _process_pool is not None:
         _process_pool.terminate()
         _process_pool.join()
-    exit(0)
+    if _to_thread_worker is not None:
+        global _to_thread_worker_running
+        _to_thread_worker_running = False
 
+        _to_thread_worker.join()
+    if _after_token_worker is not None:
+        global _after_token_worker_running
+        _after_token_worker_running = False
 
-signal.signal(signal.SIGINT, __exit_program)
-signal.signal(signal.SIGTERM, __exit_program)
+        _after_token_worker.join()
