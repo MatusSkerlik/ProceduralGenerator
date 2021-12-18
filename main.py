@@ -6,8 +6,10 @@ from enum import Enum, auto
 from functools import partial
 from typing import Tuple, List, Dict, Union
 
-WIDTH = 800
-HEIGHT = 600
+from noise import pnoise2
+
+WIDTH = 1920
+HEIGHT = 1080
 HILLS_LEVEL1_COUNT = 1
 HILLS_LEVEL2_COUNT = 3
 HILLS_LEVEL3_COUNT = 2
@@ -105,7 +107,7 @@ class Rectangle:
         return pixels
 
     def __add__(self, other):
-        return Rectangle(self.x, self.y, self.w, self.w + other.w)
+        return Rectangle(self.x, self.y, self.w, self.h + other.h)
 
     def __iter__(self):
         return itertools.product(range(self.x, self.x + self.w), range(self.y, self.y + self.h))
@@ -461,6 +463,31 @@ def create_surface(rect: Rectangle, l1: int, l2: int, l3: int, b: int, h1: int, 
     return pixels, start_y, end_y
 
 
+def perlin_fusion(rect: Rectangle, mask, h_start_prob: float, h_end_prob: float, fq: int, octaves: int):
+    assert h_start_prob >= h_end_prob
+
+    pixels = []
+    values = {}
+    masked_pixels = dict.fromkeys(mask, True)
+    for x, y in rect:
+        if (x, y) not in masked_pixels:
+            for octave in range(1, octaves + 1):
+                if octave > 1:
+                    values[(x, y)] += pnoise2((x - rect.x) / rect.w * fq * octave, (y - rect.y) / rect.w * fq * octave)
+                else:
+                    values[(x, y)] = pnoise2((x - rect.x) / rect.w * fq, (y - rect.y) / rect.w * fq)
+
+    minimum = min(values.values())
+    maximum = max(values.values())
+    interval = maximum - minimum
+    prob_decrease_per_y = (h_start_prob - h_end_prob) / rect.h
+    for x, y in rect:
+        y_prob = h_start_prob - ((y - rect.y) * prob_decrease_per_y)
+        if minimum <= values[(x, y)] <= minimum + y_prob * interval:
+            pixels.append((x, y))
+    return pixels
+
+
 Space = Rectangle(0, 0, WIDTH, 1 * HEIGHT / 10)
 Surface = Rectangle(0, Space.y + Space.h, WIDTH, 2 * HEIGHT / 10)
 Underground = Rectangle(0, Surface.y + Surface.h, WIDTH, 2 * HEIGHT / 10)
@@ -657,7 +684,7 @@ if __name__ == '__main__':
             global WIDTH, HEIGHT, DEBUG
 
             tree = BSPTree(0, Underground.y, WIDTH, Underground.h + Cavern.h)
-            tree.grow(8)
+            tree.grow(9)
 
             PixelMaterialColorMap.add_rect(Space, {
                 Material.BACKGROUND: Colors.BACKGROUND_SPACE,
@@ -685,7 +712,7 @@ if __name__ == '__main__':
 
             Draw.rect(Space, Colors.BACKGROUND_SURFACE)
             Draw.rect(Surface, Colors.BACKGROUND_SURFACE)
-            Draw.rect(Underground, Colors.BACKGROUND_UNDERGROUND)
+            Draw.rect(Underground, Colors.BACKGROUND_CAVERN)
             Draw.rect(Cavern, Colors.BACKGROUND_CAVERN)
             Draw.rect(Underworld, Colors.BACKGROUND_UNDERWORLD)
 
@@ -728,6 +755,13 @@ if __name__ == '__main__':
                 WIDTH,
                 surface_h_offset_bottom + 2
             ), Colors.BACKGROUND_UNDERGROUND)
+
+            # PERLIN FUSION
+            dirt = perlin_fusion(Underground + Cavern, [], 0.7, 0.2, 30, 6)
+            Draw.pixels(dirt, Colors.BACKGROUND_UNDERGROUND)
+
+            mud = perlin_fusion(Underground + Cavern, [], 0.2, 0.2, 40, 3)
+            Draw.pixels(mud, Colors.MUD)
 
             # CREATE OCEAN
             def success(result):
