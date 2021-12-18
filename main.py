@@ -793,7 +793,7 @@ if __name__ == '__main__':
             def error(err):
                 raise err
 
-            parallel.to_thread(partial(make_grid, Surface, SURFACE, {
+            parallel.to_thread(partial(make_grid, Surface, Draw.surface, {
                 Material.BACKGROUND: 0,
                 Material.SAND: 0,
                 Material.WATER: 0
