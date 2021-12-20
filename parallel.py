@@ -2,33 +2,31 @@ import multiprocessing
 import random
 import string
 import time
-from collections import deque
 from functools import partial
-from queue import Empty
-from threading import Thread, RLock
+from threading import Thread, Lock
 from typing import Dict
 
 FPS = 25
 THREAD_TIME = (10 ** 9) / FPS
 _last_tick = time.monotonic_ns()
 
-_to_thread_queue = deque()
+_to_thread_queue = list()
 
 _err_tasks = list()
-_err_tasks_lock = RLock()
+_err_tasks_lock = Lock()
 _succ_tasks = list()
-_succ_tasks_lock = RLock()
+_succ_tasks_lock = Lock()
 
 # functionality of 'after token' calls of this module
 # each token has its own list of tasks witch waits for task completion
 # thread version
-_thread_lock = RLock()  # lock for MainThread and AfterTokenThread
+_thread_lock = Lock()  # lock for MainThread and AfterTokenThread
 _after_token_tasks_to_thread: Dict[str, list] = dict()
 
 # functionality of 'after token' calls of this module
 # each token has its own list of tasks witch waits for task completion
 # process version
-_process_lock = RLock()  # lock for MainThread and AfterTokenThread
+_process_lock = Lock()  # lock for MainThread and AfterTokenThread
 _after_token_tasks_to_process: Dict[str, list] = dict()
 
 
@@ -70,48 +68,37 @@ class _AfterTokenWorker(Thread):
 
     def run(self) -> None:
         while _after_token_worker_running:
-            try:
-                with _succ_tasks_lock:
-                    for task_token, result in _succ_tasks:
-                        with _thread_lock:
-                            if task_token in _after_token_tasks_to_thread:
-                                q = _after_token_tasks_to_thread[task_token]
-                                while len(q) > 0:
-                                    func, succ, err, token = q.pop()
-                                    to_thread(partial(func, result), succ, err, token)
-                                del _after_token_tasks_to_thread[task_token]
+            with _succ_tasks_lock, _thread_lock, _process_lock:
+                for task_token, result in _succ_tasks:
+                    if task_token in _after_token_tasks_to_thread:
+                        q = _after_token_tasks_to_thread[task_token]
+                        while len(q) > 0:
+                            func, succ, err, token = q.pop()
+                            to_thread(partial(func, result), succ, err, token)
+                        del _after_token_tasks_to_thread[task_token]
 
-                        with _process_lock:
-                            if task_token in _after_token_tasks_to_process:
-                                q = _after_token_tasks_to_process[task_token]
-                                while len(q) > 0:
-                                    func, succ, err, token = q.pop()
-                                    to_process(partial(func, result), succ, err, token)
-                                del _after_token_tasks_to_process[task_token]
-            except Empty:
-                pass
+                    if task_token in _after_token_tasks_to_process:
+                        q = _after_token_tasks_to_process[task_token]
+                        while len(q) > 0:
+                            func, succ, err, token = q.pop()
+                            to_process(partial(func, result), succ, err, token)
+                        del _after_token_tasks_to_process[task_token]
 
-            try:
-                with _err_tasks_lock:
-                    for task_token, error in _err_tasks:
-                        with _thread_lock:
-                            if task_token in _after_token_tasks_to_thread:
-                                q = _after_token_tasks_to_thread[task_token]
-                                while len(q) > 0:
-                                    func, succ, err, token = q.pop()
-                                    err(error)
-                                del _after_token_tasks_to_thread[task_token]
+            with _err_tasks_lock, _thread_lock, _process_lock:
+                for task_token, error in _err_tasks:
+                    if task_token in _after_token_tasks_to_thread:
+                        q = _after_token_tasks_to_thread[task_token]
+                        while len(q) > 0:
+                            func, succ, err, token = q.pop()
+                            err(error)
+                        del _after_token_tasks_to_thread[task_token]
 
-                        with _process_lock:
-                            if task_token in _after_token_tasks_to_process:
-                                q = _after_token_tasks_to_process[task_token]
-                                while len(q) > 0:
-                                    func, succ, err, token = q.pop()
-                                    err(error)
-                                del _after_token_tasks_to_process[task_token]
-            except Empty:
-                pass
-
+                    if task_token in _after_token_tasks_to_process:
+                        q = _after_token_tasks_to_process[task_token]
+                        while len(q) > 0:
+                            func, succ, err, token = q.pop()
+                            err(error)
+                        del _after_token_tasks_to_process[task_token]
             time.sleep(1 / FPS)
 
 
@@ -125,7 +112,7 @@ def to_thread(func, success_callback, error_callback, token=get_token()):
 
     Also saves result of func into array for to_thread_after func calls
     """
-    global _to_thread_queue, worker
+    global _to_thread_queue
 
     # THIS WILL BE CALLED FROM POOL THREAD WORKER NUM 3
     def after_success(result):
