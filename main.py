@@ -541,17 +541,22 @@ def ore_feasibility_check(rect: Rectangle, mask: PixelArray, count: int):
     return True
 
 
-def create_ore(rect: Rectangle, mask: PixelArray, min_size: int, max_size: int, count: int):
+def create_ore(rect: Rectangle, mask: PixelArray, min_size: int, max_size: int, count: int, iterations: int = 3):
     grid = Grid.from_pixels(rect, mask, 1)
     grid.lock(1)
 
     pixels = []
-    while len(pixels) < count and ore_feasibility_check(rect, mask + pixels, count):
+    while len(pixels) < count and ore_feasibility_check(rect, mask + pixels, count) and iterations > 0:
         pixels += create_cave(grid, ((5, 1),) * 3 + ((5, 8),) * 3, 0.75, min_size, max_size)
         for x, y in pixels:
             grid[x, y] = 1
             grid.lock(1)
-    return pixels
+        iterations -= 1
+
+    if iterations == 0 or not ore_feasibility_check(rect, mask + pixels, count):
+        raise NameError("Ore could not be created.")
+    else:
+        return pixels
 
 
 Space = Rectangle(0, 0, WIDTH, 1 * HEIGHT / 10)
@@ -750,11 +755,12 @@ if __name__ == '__main__':
                     Draw.pixels(pixels, Colors.COPPER)
 
                 def error1(err):
-                    raise err
+                    print(err)
 
                 token1 = parallel.get_token()
                 parallel.to_thread_after(func1, success1, error1, wait_token=token, token=token1)
 
+                # CREATE GOLD
                 def func2(result):
                     return create_ore(rect, result, 10, 50, 1)
 
@@ -764,7 +770,7 @@ if __name__ == '__main__':
                     Draw.pixels(pixels, Colors.GOLD)
 
                 def error2(err):
-                    raise err
+                    print(err)
 
                 token2 = parallel.get_token()
                 parallel.to_thread_after(func2, success2, error2, wait_token=token, token=token2)

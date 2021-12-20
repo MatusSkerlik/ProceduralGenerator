@@ -46,23 +46,20 @@ class _ToThreadWorker(Thread):
         global _last_tick
 
         while _to_thread_worker_running:
-            if len(_to_thread_queue) > 0:
-                current_tick = time.monotonic_ns()
-                if (current_tick - _last_tick) < THREAD_TIME:
+            current_tick = time.monotonic_ns()
+            while (current_tick - _last_tick) < THREAD_TIME:
+                if len(_to_thread_queue) > 0:
                     task, success, error = _to_thread_queue.pop()
                     try:
                         success(task())
                     except Exception as e:
                         error(e)
+                    current_tick = time.monotonic_ns()
                 else:
-                    # pass control to main thread
-                    _last_tick = time.monotonic_ns()
-                    time.sleep(1 / FPS)
-
-            else:
+                    break
                 # pass control to main thread
-                _last_tick = time.monotonic_ns()
-                time.sleep(1 / FPS)
+            time.sleep(1 / FPS)
+            _last_tick = time.monotonic_ns()
 
 
 _after_token_worker_running = True
@@ -81,7 +78,7 @@ class _AfterTokenWorker(Thread):
                                 q = _after_token_tasks_to_thread[task_token]
                                 while len(q) > 0:
                                     func, succ, err, token = q.pop()
-                                    to_thread(partial(func, result=result), succ, err, token)
+                                    to_thread(partial(func, result), succ, err, token)
                                 del _after_token_tasks_to_thread[task_token]
 
                         with _process_lock:
@@ -89,7 +86,7 @@ class _AfterTokenWorker(Thread):
                                 q = _after_token_tasks_to_process[task_token]
                                 while len(q) > 0:
                                     func, succ, err, token = q.pop()
-                                    to_process(partial(func, result=result), succ, err, token)
+                                    to_process(partial(func, result), succ, err, token)
                                 del _after_token_tasks_to_process[task_token]
             except Empty:
                 pass
