@@ -3,10 +3,10 @@ import math
 import random
 import string
 import threading
-from enum import Enum, auto
 from functools import partial
 from typing import Tuple, List, Dict, Union
 
+from enum import Enum, auto
 from noise import pnoise2
 
 WIDTH = 1920
@@ -451,7 +451,7 @@ def lerp(v0: float, v1: float, t: float):
 
 
 def create_surface(rect: Rectangle, l1: int, l2: int, l3: int, b: int, h1: int, h2: int, h3: int, fade_width: float,
-                   octaves: int = 0, persistence: float = 0.5) -> (PixelArray, int, int):
+                   octaves: int = 0, persistence: float = 0.5) -> (PixelArray, PixelArray):
     num_of_levels = l1 + l2 + l3 + b + h1 + h2 + h3
 
     level_order = [-1] * l1 + [-2] * l2 + [-3] * l3 + [0] * b + [1] * h1 + [2] * h2 + [3] * h3
@@ -504,10 +504,13 @@ def create_surface(rect: Rectangle, l1: int, l2: int, l3: int, b: int, h1: int, 
             pixels.append((x, y0))
         x += 1
 
-    start_y = int(rect.y + rect.h - rect.h * noise[0])
-    end_y = int(rect.y + rect.h - rect.h * noise[len(noise) - 1])
+    grass = []
+    x = rect.x
+    for y in noise:
+        grass.append((x, int(rect.y + rect.h - rect.h * y)))
+        x += 1
 
-    return pixels, start_y, end_y
+    return pixels, grass
 
 
 def perlin_fusion(rect: Rectangle, mask: PixelArray, h_start_prob: float, h_end_prob: float, fq: int,
@@ -604,13 +607,16 @@ if __name__ == '__main__':
     import time
     from bsp import TreeVisitor, TreeNode, BSPTree
 
+    scene_thread_running = True
+
 
     class Draw:
         """ Drawing interface """
         pygame.init()
         pygame.font.init()
         surface = pygame.display.set_mode([WIDTH, HEIGHT])
-        font = pygame.font.SysFont(None, 28)
+        font_size = 18
+        font = pygame.font.SysFont(None, font_size)
 
         def __init__(self):
             raise NotImplemented
@@ -618,20 +624,19 @@ if __name__ == '__main__':
         @staticmethod
         def count():
             global WATER, LAVA, CAVE, DIRT, STONE, MUD, COPPER, GRASS, GOLD
-            size = 28
+            size = Draw.font_size
 
             if not Draw.surface.get_locked():
-                pygame.draw.rect(Draw.surface, BLACK, (16, 28, 200, 9 * size))
-                Draw.surface.blit(Draw.font.render("WATER: %d" % WATER, True, RED), (16, size))
-                Draw.surface.blit(Draw.font.render("LAVA: %d" % LAVA, True, RED), (16, 2 * size))
-                Draw.surface.blit(Draw.font.render("CAVE: %d" % CAVE, True, RED), (16, 3 * size))
-                Draw.surface.blit(Draw.font.render("DIRT: %d" % DIRT, True, RED), (16, 4 * size))
-                Draw.surface.blit(Draw.font.render("STONE: %d" % STONE, True, RED), (16, 5 * size))
-                Draw.surface.blit(Draw.font.render("MUD: %d" % MUD, True, RED), (16, 6 * size))
-                Draw.surface.blit(Draw.font.render("COPPER: %d" % COPPER, True, RED), (16, 7 * size))
-                Draw.surface.blit(Draw.font.render("GOLD: %d" % GOLD, True, RED), (16, 8 * size))
-                Draw.surface.blit(Draw.font.render("GRASS: %d" % GRASS, True, RED), (16, 9 * size))
-                pygame.display.update((16, 28, 200, 9 * size))
+                pygame.draw.rect(Draw.surface, BLACK, (8, size, 200, 9 * size))
+                Draw.surface.blit(Draw.font.render("WATER: %d" % WATER, True, RED), (8, size))
+                Draw.surface.blit(Draw.font.render("LAVA: %d" % LAVA, True, RED), (8, 2 * size))
+                Draw.surface.blit(Draw.font.render("CAVE: %d" % CAVE, True, RED), (8, 3 * size))
+                Draw.surface.blit(Draw.font.render("DIRT: %d" % DIRT, True, RED), (8, 4 * size))
+                Draw.surface.blit(Draw.font.render("STONE: %d" % STONE, True, RED), (8, 5 * size))
+                Draw.surface.blit(Draw.font.render("MUD: %d" % MUD, True, RED), (8, 6 * size))
+                Draw.surface.blit(Draw.font.render("COPPER: %d" % COPPER, True, RED), (8, 7 * size))
+                Draw.surface.blit(Draw.font.render("GOLD: %d" % GOLD, True, RED), (8, 8 * size))
+                Draw.surface.blit(Draw.font.render("GRASS: %d" % GRASS, True, RED), (8, 9 * size))
 
         @staticmethod
         def loop():
@@ -639,9 +644,10 @@ if __name__ == '__main__':
                 if event.type == pygame.QUIT or (event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE):
                     name = ''.join(random.choice(string.ascii_lowercase) for _ in range(10))
                     pygame.image.save(Draw.surface, "img/" + name + ".png")
-                    pygame.quit()
-                    pygame.font.quit()
+                    pygame.display.set_mode((1, 1))
+                    pygame.display.flip()
                     return False
+            pygame.display.flip()
             return True
 
         @staticmethod
@@ -656,7 +662,6 @@ if __name__ == '__main__':
                     for y0 in range(y, y1):
                         color = PixelMaterialColorMap.get_color(x0, y0, Material.BACKGROUND)
                         pygame.draw.rect(Draw.surface, color, (x0, y0, 1, 1))
-            pygame.display.update((x, y, x1, y1))
 
         @staticmethod
         def outline(rect: Rectangle, color: Color):
@@ -664,7 +669,6 @@ if __name__ == '__main__':
 
             x, y, x1, y1 = rect.get_rect()
             pygame.draw.rect(Draw.surface, color, (x, y, x1, y1), 1)
-            pygame.display.update((x, y, x1, y1))
 
         @staticmethod
         def pixels(pixels, color: Color = None, material: Material = None):
@@ -679,7 +683,6 @@ if __name__ == '__main__':
                     pygame.draw.rect(Draw.surface, c, (x, y, 1, 1))
                 else:
                     pygame.draw.rect(Draw.surface, color, (x, y, 1, 1))
-            pygame.display.update(get_bounding_rect(pixels).get_rect())
 
         @staticmethod
         def polygon(points: Tuple[Tuple[int, int], ...], color: Tuple[int, int, int]):
@@ -710,8 +713,6 @@ if __name__ == '__main__':
                     by = y
                 elif by < y:
                     by = y
-
-            pygame.display.update((sx, sy, bx - sx, by - sy))
 
 
     class NodeType(Enum):
@@ -746,9 +747,6 @@ if __name__ == '__main__':
                 parallel.to_process(func, success, error, token)
 
                 # generate COPPER ORE
-                def func1(result):
-                    return create_ore(rect, result, 10, 50, 1)
-
                 def success1(pixels):
                     global COPPER
                     COPPER += len(pixels)
@@ -758,12 +756,12 @@ if __name__ == '__main__':
                     print(err)
 
                 token1 = parallel.get_token()
-                parallel.to_thread_after(func1, success1, error1, wait_token=token, token=token1)
+                parallel.to_process_after(partial(create_ore, rect, min_size=10, max_size=50, count=1),
+                                          success1,
+                                          error1,
+                                          wait_token=token, token=token1)
 
                 # CREATE GOLD
-                def func2(result):
-                    return create_ore(rect, result, 10, 50, 1)
-
                 def success2(pixels):
                     global GOLD
                     GOLD += len(pixels)
@@ -773,12 +771,12 @@ if __name__ == '__main__':
                     print(err)
 
                 token2 = parallel.get_token()
-                parallel.to_thread_after(func2, success2, error2, wait_token=token, token=token2)
+                parallel.to_process_after(partial(create_ore, rect, min_size=10, max_size=50, count=1),
+                                          success2,
+                                          error2,
+                                          wait_token=token, token=token2)
 
                 if random.random() > 0.8:  # fill caves with water
-                    def func(result):
-                        return create_water(rect, result, random.randint(10, 50) / 100)
-
                     def success(pixels):
                         global WATER, LAVA
 
@@ -792,7 +790,10 @@ if __name__ == '__main__':
                     def error(err):
                         raise err
 
-                    parallel.to_thread_after(func, success, error, wait_token=token)
+                    parallel.to_process_after(partial(create_water, rect, p=random.randint(10, 50) / 100),
+                                              success,
+                                              error,
+                                              wait_token=token)
 
                 node.type = NodeType.CAVE
 
@@ -868,7 +869,7 @@ if __name__ == '__main__':
             surface_x = surface_w_offset_left
             surface_y = Space.h + surface_h_offset_top
             Surf = Rectangle(surface_x, surface_y, surface_w, surface_h)
-            surface, ocean_left_y, ocean_right_y = create_surface(
+            surface, grass = create_surface(
                 Surf,
                 LOWLAND_LEVEL1_COUNT,
                 LOWLAND_LEVEL2_COUNT,
@@ -881,6 +882,7 @@ if __name__ == '__main__':
                 octaves=4,
                 persistence=0.12
             )
+
             Draw.pixels(surface, Colors.BACKGROUND_UNDERGROUND)
             DIRT += len(surface)
             Coral = Rectangle(
@@ -892,17 +894,29 @@ if __name__ == '__main__':
             Draw.rect(Coral, Colors.BACKGROUND_UNDERGROUND)
             DIRT += Coral.w * Coral.h
 
+            if not scene_thread_running:
+                return
+
             # PERLIN FUSION
             dirt = perlin_fusion(Underground + Cavern, [], 0.7, 0.2, 30, 6)
             Draw.pixels(dirt, Colors.BACKGROUND_UNDERGROUND)
             DIRT += len(dirt)
             STONE -= len(dirt)
 
+            if not scene_thread_running:
+                return
+
             mud = perlin_fusion(Underground + Cavern, [], 0.2, 0.2, 40, 3)
             Draw.pixels(mud, Colors.MUD)
             MUD += len(mud)
 
+            if not scene_thread_running:
+                return
+
             # CREATE OCEAN
+            ocean_left_y = grass[0][1]
+            ocean_right_y = grass[-1][1]
+
             sand, water = create_ocean(
                 Rectangle(0, ocean_left_y, surface_w_offset_left,
                           Surface.h + (Surface.y - ocean_left_y)),
@@ -912,6 +926,9 @@ if __name__ == '__main__':
             Draw.pixels(water, material=Material.WATER)
             SAND += len(sand)
             WATER += len(water)
+
+            if not scene_thread_running:
+                return
 
             sand, water = create_ocean(
                 Rectangle(WIDTH - surface_w_offset_right, ocean_right_y,
@@ -923,15 +940,15 @@ if __name__ == '__main__':
             SAND += len(sand)
             WATER += len(water)
 
+            if not scene_thread_running:
+                return
+
             # CREATE GRASS
-            grid = make_grid(Surface, Draw.surface, {
-                Material.BACKGROUND: 0,
-                Material.SAND: 0,
-                Material.WATER: 0
-            }, 1)
-            grass = create_grass(Surface, grid, 0, 1)
             Draw.pixels(grass, Colors.GRASS)
             GRASS += len(grass)
+
+            if not scene_thread_running:
+                return
 
             # CREATE DEPOSIT STONE
             def success(pixels):
@@ -971,6 +988,9 @@ if __name__ == '__main__':
             parallel.to_process(partial(create_cave, surface_grid, ((5, 1),) * 3 + ((5, 8),) * 3, 0.75, 20), success,
                                 error)
 
+            if not scene_thread_running:
+                return
+
             # CREATE CAVES
             tree.traverse(CreateCaveTreeVisitor())
 
@@ -980,6 +1000,7 @@ if __name__ == '__main__':
     scene_thread.start()
     while Draw.loop():
         Draw.count()
-        time.sleep(1 / 20)
-    parallel.clean()
+        time.sleep(1 / 25)
+    scene_thread_running = False
     scene_thread.join()
+    parallel.clean()

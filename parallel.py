@@ -185,16 +185,12 @@ def init():
     if _to_thread_worker is None:
         global _to_thread_worker_running
         _to_thread_worker_running = True
-
         _to_thread_worker = _ToThreadWorker()
-        _to_thread_worker.daemon = True
         _to_thread_worker.start()
     if _after_token_worker is None:
         global _after_token_worker_running
         _after_token_worker_running = True
-
         _after_token_worker = _AfterTokenWorker()
-        _after_token_worker.deamon = True
         _after_token_worker.start()
 
 
@@ -206,10 +202,8 @@ def clean():
     if _to_thread_worker is not None:
         global _to_thread_worker_running
         _to_thread_worker_running = False
-
         _to_thread_worker.join()
     if _after_token_worker is not None:
         global _after_token_worker_running
         _after_token_worker_running = False
-
         _after_token_worker.join()
