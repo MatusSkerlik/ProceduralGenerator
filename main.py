@@ -3,10 +3,11 @@ import math
 import random
 import string
 import threading
+from enum import Enum, auto
 from functools import partial, lru_cache
+from operator import itemgetter
 from typing import Tuple, List, Dict, Union
 
-from enum import Enum, auto
 from noise import pnoise2
 
 WIDTH = 1920
@@ -24,6 +25,7 @@ TUNNELS_MIN = 3
 TUNNELS_MAX = 5
 TUNNEL_PATHS_MIN = 4
 TUNNEL_PATHS_MAX = 5
+TUNNEL_WIDTH = 3
 DEBUG = False
 
 # dynamic globals
@@ -62,21 +64,19 @@ GOLD = DynamicInt(0)
 
 class Material(Enum):
     """ Abstract class for indirect mapping of colors """
+    NONE = auto()
     BASE = auto()
-    SECONDARY = auto()
-    TERTIARY = auto()
-    MATERIAL3 = auto()
-    MATERIAL4 = auto()
-    MATERIAL5 = auto()
-    MATERIAL6 = auto()
-    MATERIAL7 = auto()
-    MATERIAL8 = auto()
-    MATERIAL9 = auto()
+    STONE = auto()
+    DIRT = auto()
+    MUD = auto()
+    COPPER = auto()
+    GOLD = auto()
     BACKGROUND = auto()
     CAVE_BACKGROUND = auto()
     WATER = auto()
     LAVA = auto()
     SAND = auto()
+    GRASS = auto()
 
 
 class Colors:
@@ -106,6 +106,7 @@ class Colors:
 
 Color = Tuple[int, int, int]
 PixelArray = List[Tuple[int, int]]
+Pixel = Tuple[int, int]
 
 RED = (255, 0, 0)
 YELLOW = (255, 255, 0)
@@ -221,12 +222,10 @@ class Grid:
         return Grid(rect.x, rect.y, rect.w, rect.h, default_state)
 
     @staticmethod
-    def from_pixels(rect: Rectangle, pixels, state: int = 1, lock=False, default_state: int = 0):
+    def from_pixels(rect: Rectangle, pixels, state: int = 1, default_state: int = 0):
         grid = Grid.from_rect(rect, default_state)
         for x, y in pixels:
             grid[x, y] = state
-        if lock:
-            grid.lock(state)
         return grid
 
 
@@ -617,19 +616,19 @@ def create_ore(rect: Rectangle, mask: PixelArray, min_size: int, max_size: int, 
         pixels += create_cave(grid, ((5, 1),) * 3 + ((5, 8),) * 3, 0.75, min_size, max_size)
         for x, y in pixels:
             grid[x, y] = 1
-            grid.lock(1)
+        grid.lock(1)
         iterations -= 1
 
-    if iterations == 0 or not ore_feasibility_check(rect, mask + pixels, count):
+    if len(pixels) < count and (iterations == 0 or not ore_feasibility_check(rect, mask + pixels, count)):
         raise NameError("Ore could not be created.")
     else:
         return pixels
 
 
-def create_water_helper(rect: Rectangle, prob_per_cave: float, pixels: PixelArray) -> List[PixelArray]:
-    global WATER_HEIGHT_MIN, WATER_HEIGHT_MAX
-
-    caves = extract_regions(rect, pixels)
+def create_water_helper(rect: Rectangle, prob_per_cave: float) -> List[PixelArray]:
+    global WATER_HEIGHT_MIN, WATER_HEIGHT_MAX, MaterialMap
+    grid = MaterialMap.grid(rect, {Material.CAVE_BACKGROUND: 1}, 0)
+    caves = extract_regions(rect, grid.extract(1))
     results = []
     for cave in caves:
         if random.random() <= prob_per_cave:
@@ -637,6 +636,34 @@ def create_water_helper(rect: Rectangle, prob_per_cave: float, pixels: PixelArra
                 int(WATER_HEIGHT_MIN * 100), int(WATER_HEIGHT_MAX * 100)
             ) / 100)
     return results
+
+
+def create_ore_helper(rect: Rectangle, min_size: int, max_size: int, count: int,
+                      iterations: int = 3):
+    global MaterialMap
+    grid = MaterialMap.grid(rect, {Material.CAVE_BACKGROUND: 1, Material.COPPER: 1, Material.GOLD: 1}, 0)
+    return create_ore(rect, grid.extract(1), min_size, max_size, count, iterations)
+
+
+def create_surface_ore_helper(rect: Rectangle, mask: PixelArray, min_size: int, max_size: int, count: int,
+                              iterations: int = 3):
+    global MaterialMap
+    grid = MaterialMap.grid(rect,
+                            {Material.CAVE_BACKGROUND: 1, Material.COPPER: 1, Material.GOLD: 1, Material.STONE: 1}, 0)
+    mask += grid.extract(1)
+    return create_ore(rect, mask, min_size, max_size, count, iterations)
+
+
+def create_surface_cave_helper(rect: Rectangle, mask: PixelArray, config_seq: Tuple[Tuple[int, int], ...],
+                               birth_chance: float,
+                               min_size: int = 75, max_size: int = 10000):
+    global MaterialMap
+    grid = MaterialMap.grid(rect,
+                            {Material.CAVE_BACKGROUND: 1, Material.COPPER: 1, Material.GOLD: 1, Material.STONE: 1}, 0)
+    for x, y in mask:
+        grid[x, y] = 1
+    grid.lock(1)
+    return create_cave(grid, config_seq, birth_chance, min_size, max_size)
 
 
 Space = Rectangle(0, 0, WIDTH, 1 * HEIGHT / 10)
@@ -677,6 +704,44 @@ class PixelMaterialColorMap:
     def get_mapping(cls, x, y) -> Dict[Material, Color]:
         return cls._map[(x, y)]
 
+
+class _MaterialMap:
+    global WIDTH, HEIGHT
+    _array = [Material.NONE for _ in range(WIDTH * HEIGHT)]
+    _lock = threading.Lock()
+
+    def __setitem__(self, key, value):
+        assert isinstance(value, Material)
+        with self._lock:
+            if isinstance(key, tuple):
+                x, y = key
+                self._array[y * WIDTH + x] = value
+            else:
+                for x, y in key:
+                    self._array[y * WIDTH + x] = value
+
+    def __getitem__(self, item):
+        with self._lock:
+            x, y = item
+            return self._array[y * WIDTH + x]
+
+    def __iter__(self):
+        with self._lock:
+            return itertools.product(range(0, WIDTH), range(0, HEIGHT))
+
+    def grid(self, rect: Rectangle, mapping: Dict[Material, int], default: int):
+        grid = Grid.from_rect(rect)
+        with self._lock:
+            for x, y in grid:
+                key = self._array[y * WIDTH + x]
+                if key in mapping:
+                    grid[x, y] = mapping[key]
+                else:
+                    grid[x, y] = default
+        return grid
+
+
+MaterialMap = _MaterialMap()
 
 if __name__ == '__main__':
     import pygame
@@ -797,6 +862,7 @@ if __name__ == '__main__':
         def run():
             global WIDTH, HEIGHT, DEBUG
             global DIRT, MUD, SAND, WATER, LAVA, GRASS, COPPER, STONE
+            global MaterialMap
 
             tree = BSPTree(0, Underground.y, WIDTH, Underground.h + Cavern.h)
             tree.grow(9)
@@ -825,6 +891,8 @@ if __name__ == '__main__':
                 Material.CAVE_BACKGROUND: Colors.STONE
             })
 
+            MaterialMap[Space + Underworld] = Material.BACKGROUND
+
             Draw.rect(Space, Colors.BACKGROUND_SURFACE)
             Draw.rect(Surface, Colors.BACKGROUND_SURFACE)
             Draw.rect(Underground, Colors.BACKGROUND_CAVERN)
@@ -833,6 +901,7 @@ if __name__ == '__main__':
 
             STONE += Underground.w * Underground.h
             STONE += Cavern.w * Cavern.h
+            MaterialMap[Underground + Cavern] = Material.STONE
 
             if DEBUG:
                 Draw.outline(Space, MAGENTA)
@@ -877,6 +946,9 @@ if __name__ == '__main__':
             Draw.rect(Coral, Colors.BACKGROUND_UNDERGROUND)
             DIRT += Coral.w * Coral.h
 
+            MaterialMap[surface] = Material.DIRT
+            MaterialMap[Coral] = Material.DIRT
+
             if not scene_thread_running:
                 return
 
@@ -886,6 +958,7 @@ if __name__ == '__main__':
             Draw.pixels(dirt, Colors.BACKGROUND_UNDERGROUND)
             DIRT += len(dirt)
             STONE -= len(dirt)
+            MaterialMap[dirt] = Material.DIRT
 
             if not scene_thread_running:
                 return
@@ -894,6 +967,7 @@ if __name__ == '__main__':
             mud_dict = dict.fromkeys(mud, True)
             Draw.pixels(mud, Colors.MUD)
             MUD += len(mud)
+            MaterialMap[mud] = Material.MUD
 
             if not scene_thread_running:
                 return
@@ -911,6 +985,8 @@ if __name__ == '__main__':
             Draw.pixels(water, material=Material.WATER)
             SAND += len(sand)
             WATER += len(water)
+            MaterialMap[sand] = Material.SAND
+            MaterialMap[water] = Material.WATER
 
             if not scene_thread_running:
                 return
@@ -924,6 +1000,8 @@ if __name__ == '__main__':
             Draw.pixels(water, material=Material.WATER)
             SAND += len(sand)
             WATER += len(water)
+            MaterialMap[sand] = Material.SAND
+            MaterialMap[water] = Material.WATER
 
             if not scene_thread_running:
                 return
@@ -931,13 +1009,15 @@ if __name__ == '__main__':
             # CREATE GRASS
             Draw.pixels(grass, Colors.GRASS)
             GRASS += len(grass)
+            MaterialMap[grass] = Material.GRASS
 
             if not scene_thread_running:
                 return
 
             def success(pixels):
-                global CAVE, DIRT, MUD, STONE
+                global CAVE, DIRT, MUD, STONE, MaterialMap
                 CAVE += len(pixels)
+                MaterialMap[pixels] = Material.CAVE_BACKGROUND
 
                 for x, y in pixels:
                     if (x, y) in mud_dict:
@@ -952,7 +1032,7 @@ if __name__ == '__main__':
                 raise err
 
             # CREATE TOP CAVES
-            global TUNNELS_MIN, TUNNELS_MAX, TUNNEL_PATHS_MIN, TUNNEL_PATHS_MAX
+            global TUNNELS_MIN, TUNNELS_MAX, TUNNEL_PATHS_MIN, TUNNEL_PATHS_MAX, TUNNEL_WIDTH
             top_cave_futures = {}
             top_caves = []
             for node in tree:
@@ -981,24 +1061,21 @@ if __name__ == '__main__':
                 Y = Surface.y + Surface.h
                 P = pygame.Vector2(tunnel_points[0])
                 Q = pygame.Vector2(tunnel_points[-1])
-                Cv = None
 
-                for x, y in tunnel_points:
-                    if x == (P.x + int((Q.x - P.x) / 2)):
-                        Cv = pygame.Vector2(x, y)
-                        break
-                assert Cv is not None
+                # as starting point select lowest point
+                Cv = pygame.Vector2(max(tunnel_points, key=itemgetter(1)))
 
                 d = Q.x - P.x
-                if P.y > Q.y:  # Q3
-                    B = pygame.Vector2(random.randint(int(Q.x) + 1, int(Q.x + int(d))), Y)
-                    A = pygame.Vector2(random.randint(int(P.x) + 1, int(B.x)), Y)
-                else:  # Q4
-                    A = pygame.Vector2(random.randint(int(P.x - int(d)), int(P.x) + 1), Y)
-                    B = pygame.Vector2(random.randint(int(A.x), int(Q.x) + 1), Y)
+                if P.y > Q.y:  # Q4
+                    B = pygame.Vector2(random.randint(int(Q.x) + int(0.5 * d), int(Q.x + int(1.5 * d))), Y)
+                    A = pygame.Vector2(random.randint(int(P.x) + int(0.5 * d), int(B.x) - int(d / 2)), Y)
+                else:  # Q3
+                    A = pygame.Vector2(random.randint(int(P.x - int(1.5 * d)), int(P.x) - int(0.5 * d)), Y)
+                    B = pygame.Vector2(random.randint(int(A.x) + int(d / 2), int(Q.x) - int(0.5 * d)), Y)
 
-                # Draw.line(P, A, BLUE, 5)
-                # Draw.line(Q, B, BLUE, 5)
+                if DEBUG:
+                    Draw.line(P, A, RED, 5)
+                    Draw.line(Q, B, RED, 5)
 
                 APm = (P.y - A.y) / (P.x - A.x)
                 BQm = (Q.y - B.y) / (Q.x - B.x)
@@ -1032,19 +1109,40 @@ if __name__ == '__main__':
                             points.append(pygame.Vector2(int(BQeq(y)), y))
                     cy = y
 
+                # choose x caves by their distance
+                EP = points[-1]
+                magnitudes = []
+                for cave in top_caves:
+                    CP = pygame.Vector2(cave.get_center())
+                    mag = (CP - EP).magnitude()
+                    magnitudes.append(mag)
+                cave_magnitude = list(zip(magnitudes, top_caves))
+                cave_magnitude.sort(key=itemgetter(0))
+                caves = tuple(map(itemgetter(1), cave_magnitude[:3]))
+                cave = random.choice(caves)
+
+                CP = pygame.Vector2(cave.get_center())
+                if CP.x == points[-1].x:
+                    CP.x += 1
+                points.append(CP)
+
                 min_x = P.x if P.x < A.x else A.x
                 max_x = Q.x if Q.x > B.x else B.x
                 min_y = P.y if P.y < Q.y else Q.y
                 max_y = A.y if A.y > B.y else B.y
+                min_x = cave.x if cave.x < min_x else min_x
+                max_x = cave.x + cave.w if cave.x + cave.h > max_x else max_x
+                rect = Rectangle(min_x, min_y, max_x - min_x, max_y - min_y + cave.h)
 
-                rect = Rectangle(min_x, min_y, max_x - min_x, max_y - min_y)
                 # Draw.outline(rect, RED)
-                # TODO add point to cave center
+                # Draw.outline(cave, BLUE)
 
+                # prepare for cellular automation
                 grid = Grid.from_rect(rect, 2)
                 for P1, P2 in zip(points, points[1:]):
-                    pixels_outer = dict.fromkeys(pixels_between((int(P1.x), int(P1.y)), (int(P2.x), int(P2.y)), 12),
-                                                 True)
+                    pixels_outer = dict.fromkeys(
+                        pixels_between((int(P1.x), int(P1.y)), (int(P2.x), int(P2.y)), TUNNEL_WIDTH + 7),
+                        True)
                     for x, y in pixels_outer.keys():
                         try:
                             grid[x, y] = 0
@@ -1052,13 +1150,15 @@ if __name__ == '__main__':
                             pass
 
                 for P1, P2 in zip(points, points[1:]):
-                    pixels_inner = dict.fromkeys(pixels_between((int(P1.x), int(P1.y)), (int(P2.x), int(P2.y)), 5),
-                                                 True)
+                    pixels_inner = dict.fromkeys(
+                        pixels_between((int(P1.x), int(P1.y)), (int(P2.x), int(P2.y)), TUNNEL_WIDTH),
+                        True)
                     for x, y in pixels_inner.keys():
                         try:
                             grid[x, y] = 1
                         except IndexError:
                             pass
+                grid.lock(2)
 
                 for x, y in grid.extract(0):
                     grid[x, y] = 1 if random.random() > 0.5 else 0
@@ -1066,7 +1166,52 @@ if __name__ == '__main__':
                     grid = cave_cellular_step(rect, grid, 4, 3)
                 for step in range(1):
                     grid = cave_cellular_step(rect, grid, 1, 1)
-                Draw.pixels(grid.extract(1), Colors.DIRT)
+                tunnel = grid.extract(1)
+                Draw.pixels(tunnel, Colors.DIRT)
+                MaterialMap[tunnel] = Material.CAVE_BACKGROUND
+
+            # CREATE DEPOSIT STONE
+            def success1(pixels):
+                global STONE, MaterialMap
+                STONE += len(pixels)
+                MaterialMap[pixels] = Material.STONE
+                Draw.pixels(pixels, Colors.BACKGROUND_CAVERN)
+
+            def error1(err):
+                raise err
+
+            Surf = Rectangle(surface_w_offset_left, Surface.y + Surface.h - surface_h_offset_bottom - 1,
+                             WIDTH - surface_w_offset_right - surface_w_offset_left,
+                             surface_h_offset_bottom + 1)
+            surface_grid = Grid.from_pixels(Surface, surface, 0, 1)
+            for x, y in Surf:
+                surface_grid[x, y] = 0
+            stone_deposit_future = ConcurrentExecutor.submit(
+                partial(create_surface_cave_helper, Surface, surface_grid.extract(1), ((5, 1),) * 5 + ((5, 8),) * 4,
+                        .75),
+                success1,
+                error1)
+
+            # CREATE DEPOSIT COPPER
+            def success2(pixels):
+                global COPPER, MaterialMap
+                COPPER += len(pixels)
+                MaterialMap[pixels] = Material.COPPER
+                Draw.pixels(pixels, Colors.COPPER)
+
+            def error2(err):
+                raise err
+
+            for x, y in Surf:
+                surface_grid[x, y] = 0
+            copper_deposit_future = ConcurrentExecutor.submit(
+                partial(create_surface_ore_helper, Surface, surface_grid.extract(1), 10, 50, 1, 1),
+                success2,
+                error2)
+            copper_deposit_future.after(stone_deposit_future, subscribe_for_result=False)
+
+            if not scene_thread_running:
+                return
 
             # CREATE OTHER CAVES
             cave_futures = {}
@@ -1099,7 +1244,7 @@ if __name__ == '__main__':
 
                     # CREATE COPPER
                     def success1(pixels):
-                        global COPPER, DIRT, MUD, STONE
+                        global COPPER, DIRT, MUD, STONE, MaterialMap
                         COPPER += len(pixels)
                         for x, y in pixels:
                             if (x, y) in mud_dict:
@@ -1108,22 +1253,22 @@ if __name__ == '__main__':
                                 DIRT -= 1
                             else:
                                 STONE -= 1
+                        MaterialMap[pixels] = Material.COPPER
                         Draw.pixels(pixels, Colors.COPPER)
 
                     def error1(err):
                         print(err)
 
                     copper_future = ConcurrentExecutor.submit(
-                        partial(create_ore, rect, min_size=10, max_size=50, count=1),
+                        partial(create_ore_helper, rect, min_size=10, max_size=50, count=1),
                         success1,
                         error1)
                     copper_future.after(*top_cave_futures.values(), subscribe_for_result=False)
                     copper_future.after(*cave_futures.values(), subscribe_for_result=False)
-                    copper_future.after(cave_futures[node])
 
                     # CREATE GOLD
                     def success2(pixels):
-                        global GOLD, DIRT, MUD, STONE
+                        global GOLD, DIRT, MUD, STONE, MaterialMap
                         GOLD += len(pixels)
                         for x, y in pixels:
                             if (x, y) in dirt_dict:
@@ -1132,27 +1277,29 @@ if __name__ == '__main__':
                                 MUD -= 1
                             else:
                                 STONE -= 1
+                        MaterialMap[pixels] = Material.GOLD
                         Draw.pixels(pixels, Colors.GOLD)
 
                     def error2(err):
                         print(err)
 
                     gold_future = ConcurrentExecutor.submit(
-                        partial(create_ore, rect, min_size=5, max_size=20, count=1),
+                        partial(create_ore_helper, rect, min_size=5, max_size=20, count=1),
                         success2,
                         error2)
                     gold_future.after(*cave_futures.values(), subscribe_for_result=False)
-                    gold_future.after(cave_futures[node])
 
                     # CREATE LIQUID
                     def success3(pixels):
-                        global WATER, LAVA
+                        global WATER, LAVA, MaterialMap
 
                         if random.random() > 0.8:
                             LAVA += len(pixels)
+                            MaterialMap[pixels] = Material.LAVA
                             Draw.pixels(pixels, material=Material.LAVA)
                         else:
                             WATER += len(pixels)
+                            MaterialMap[pixels] = Material.WATER
                             Draw.pixels(pixels, material=Material.WATER)
 
                     def error3(err):
@@ -1163,54 +1310,6 @@ if __name__ == '__main__':
                         success3,
                         error3)
                     liquid_future.after(*cave_futures.values(), subscribe_for_result=False)
-                    liquid_future.after(cave_futures[node])
-
-            # CREATE DEPOSIT STONE
-            def success(pixels):
-                global STONE
-                STONE += len(pixels)
-                Draw.pixels(pixels, Colors.BACKGROUND_CAVERN)
-
-            def error(err):
-                raise err
-
-            Surf = Rectangle(surface_w_offset_left, Surface.y, WIDTH - surface_w_offset_right - surface_w_offset_left,
-                             Surface.h)
-            surface_grid = Grid.from_pixels(Surf, surface, 1, False)
-            for x, y in Rectangle(surface_w_offset_left, Surface.y + Surface.h - surface_h_offset_bottom,
-                                  WIDTH - surface_w_offset_right - surface_w_offset_left, surface_h_offset_bottom):
-                surface_grid[x, y] = 1
-            surface_grid.lock(0)
-            stone_deposit_future = ConcurrentExecutor.submit(
-                partial(create_cave, surface_grid, ((5, 1),) * 4 + ((5, 8),) * 4, 0.75, 50),
-                success,
-                error)
-            stone_deposit_future.after(*cave_futures.values(), subscribe_for_result=False)
-
-            # CREATE DEPOSIT COPPER
-            def success(pixels):
-                global COPPER
-                COPPER += len(pixels)
-                Draw.pixels(pixels, Colors.COPPER)
-
-            def error(err):
-                raise err
-
-            Surf = Rectangle(surface_w_offset_left, Surface.y, WIDTH - surface_w_offset_right - surface_w_offset_left,
-                             Surface.h)
-            surface_grid = Grid.from_pixels(Surf, surface, 1, False)
-            for x, y in Rectangle(surface_w_offset_left, Surface.y + Surface.h - surface_h_offset_bottom,
-                                  WIDTH - surface_w_offset_right - surface_w_offset_left, surface_h_offset_bottom):
-                surface_grid[x, y] = 1
-            surface_grid.lock(0)
-            copper_deposit_future = ConcurrentExecutor.submit(
-                partial(create_cave, surface_grid, ((5, 1),) * 3 + ((5, 8),) * 3, 0.75, 20),
-                success,
-                error)
-            copper_deposit_future.after(stone_deposit_future, subscribe_for_result=False)
-
-            if not scene_thread_running:
-                return
 
             ConcurrentExecutor.run()
 
