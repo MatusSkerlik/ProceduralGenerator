@@ -1,5 +1,4 @@
 import random
-from abc import abstractmethod, ABC
 
 
 def _bsp(x_mn, y_mn, x_mx, y_mx, vertical=False, r_v=0.25, r_h=0.25):
@@ -22,6 +21,7 @@ class TreeNode:
         self.h = h
         self.type = None
 
+        self.parent = None
         self.left = None
         self.right = None
         self.depth = 0
@@ -30,11 +30,9 @@ class TreeNode:
     def leaf(self):
         return self.left is None and self.right is None
 
-
-class TreeVisitor(ABC):
-    @abstractmethod
-    def visit(self, node: TreeNode):
-        pass
+    @property
+    def root(self):
+        return self.parent is None
 
 
 class BSPTree:
@@ -44,6 +42,8 @@ class BSPTree:
         self.root = TreeNode(x, y, w, h)
 
     def grow(self, depth: int):
+        del self.root.left
+        del self.root.right
         self.root.left = None
         self.root.right = None
         leaves = [self.root]
@@ -61,18 +61,20 @@ class BSPTree:
                 ###########################################################
                 a, b = _bsp(leaf.x, leaf.y, leaf.x + leaf.w, leaf.y + leaf.h, vertical, 0.3, 0.3)
                 leaf.left = TreeNode(a[0], a[1], a[2] - a[0], a[3] - a[1])
+                leaf.left.parent = leaf
                 leaf.left.depth = depth
                 leaf.right = TreeNode(b[0], b[1], b[2] - b[0], b[3] - b[1])
+                leaf.right.parent = leaf
                 leaf.right.depth = depth
                 new_leaves.append(leaf.left)
                 new_leaves.append(leaf.right)
             leaves = new_leaves
 
-    def traverse(self, visitor: TreeVisitor):
+    def __iter__(self):
         leaves = [self.root]
         while len(leaves) > 0:
             leaf = leaves.pop()
-            visitor.visit(leaf)
+            yield leaf
             if leaf.left:
                 leaves.append(leaf.left)
             if leaf.right:
