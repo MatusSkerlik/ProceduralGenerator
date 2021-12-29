@@ -1,3 +1,4 @@
+import copy
 import itertools
 import math
 import random
@@ -13,9 +14,9 @@ from noise import pnoise2
 WIDTH = 1920
 HEIGHT = 1080
 HILLS_LEVEL1_COUNT = 1
-HILLS_LEVEL2_COUNT = 3
+HILLS_LEVEL2_COUNT = 2
 HILLS_LEVEL3_COUNT = 2
-LOWLAND_LEVEL0_COUNT = 3
+LOWLAND_LEVEL0_COUNT = 4
 LOWLAND_LEVEL1_COUNT = 2
 LOWLAND_LEVEL2_COUNT = 1
 LOWLAND_LEVEL3_COUNT = 1
@@ -23,9 +24,12 @@ WATER_HEIGHT_MIN = 0.25
 WATER_HEIGHT_MAX = 0.75
 TUNNELS_MIN = 3
 TUNNELS_MAX = 5
-TUNNEL_PATHS_MIN = 4
-TUNNEL_PATHS_MAX = 5
-TUNNEL_WIDTH = 3
+TUNNEL_PATHS_MIN = 3
+TUNNEL_PATHS_MAX = 4
+TUNNEL_PATH_WIDTH_MIN = 5
+TUNNEL_PATH_WIDTH_MAX = 10
+TUNNEL_WIDTH_MIN = 25
+TUNNEL_WIDTH_MAX = 50
 DEBUG = False
 
 # dynamic globals
@@ -318,8 +322,8 @@ def nbs_moore(x: int, y: int, grid: Grid):
     return nbs
 
 
-def cave_cellular_step(rect: Rectangle, grid: Grid, death_limit: int, birth_limit: int):
-    updated_grid = Grid.from_rect(rect)
+def cave_cellular_step(grid: Grid, death_limit: int, birth_limit: int):
+    updated_grid = copy.deepcopy(grid)
     for x, y in grid.unlocked():
         alive = len([True for _ in nbs_moore(x, y, grid) if _ == 1])
 
@@ -337,30 +341,33 @@ def cave_cellular_step(rect: Rectangle, grid: Grid, death_limit: int, birth_limi
 
 
 def pixels_between(p1: Tuple[int, int], p2: Tuple[int, int], width: int) -> PixelArray:
+    if p1[0] > p2[0]:
+        tmp = p2
+        p2 = p1
+        p1 = tmp
     x0, y0 = p1
     x1, y1 = p2
     m = (y1 - y0) / (x1 - x0)
-    eq = lambda x: m * (x - x0) + y0
+    eq_x = lambda x: m * (x - x0) + y0
 
-    if x0 > x1:
-        temp = int(x0)
-        x0 = x1
-        x1 = temp
-        temp = int(y0)
-        y0 = y1
-        y1 = temp
+    circle = []
+    for x in range(0, width):
+        for y in range(0, width):
+            v = pygame.Vector2(x, y)
+            if abs(v.magnitude()) <= width:
+                circle.append((x, y))
 
-    pixels = []
+    pixels = {}
+    c = -int(width / 2)
     for x in range(x0, x1):
-        if width > 1:
-            for _y in range(-int(width / 2), int(width / 2)):
-                pixels.append((x, int(eq(x)) + _y))
-        else:
-            pixels.append((x, int(eq(x))))
-    return pixels
+        y = int(eq_x(x))
+        for x_, y_ in circle:
+            pixels[x + x_ + c, y + y_ + c] = True
+
+    return list(pixels.keys())
 
 
-def make_grid(rect: Rectangle, surface, mapping: Dict[Material, int], default_state: int = 0) -> Grid:
+def make_grid(rect: Rectangle, surface: PixelArray, mapping: Dict[Material, int], default_state: int = 0) -> Grid:
     grid = Grid.from_rect(rect)
     pixel_buffer = pygame.surfarray.pixels3d(surface)
 
@@ -392,11 +399,10 @@ def create_grass(rect: Rectangle, grid: Grid, air_state: int, wall_state: int) -
     return grass_pixels
 
 
-def extract_regions(rect: Rectangle, pixels: PixelArray) -> List[PixelArray]:
-    grid = Grid.from_pixels(rect, pixels, 1)
+def extract_regions(grid: Grid, state: int) -> List[PixelArray]:
     visited = {}
     regions = []
-    for x, y in pixels:
+    for x, y in grid.extract(state):
         if (x, y) not in visited:
             cells, newly_visited = flood_fill(x, y, 1, grid)
             visited.update(newly_visited)
@@ -409,16 +415,16 @@ def create_cave(rect: Union[Rectangle, Grid], config_seq: Tuple[Tuple[int, int],
     if isinstance(rect, Rectangle):
         grid = Grid.from_rect(rect)
     else:
-        grid = rect
+        grid = copy.deepcopy(rect)
 
     for x, y in grid.unlocked():
         grid[x, y] = 1 if random.random() > birth_chance else 0
 
     for step in range(len(config_seq)):
         death_limit, birth_limit = config_seq[step]
-        grid = cave_cellular_step(rect, grid, death_limit, birth_limit)
+        grid = cave_cellular_step(grid, death_limit, birth_limit)
 
-    caves = extract_regions(rect, grid.extract(1))
+    caves = extract_regions(grid, 1)
     for cave in caves:
         if len(cave) < min_size or len(cave) > max_size:
             for x, y in cave:
@@ -484,10 +490,11 @@ def lerp(v0: float, v1: float, t: float):
 
 def create_surface(rect: Rectangle, l1: int, l2: int, l3: int, b: int, h1: int, h2: int, h3: int, fade_width: float,
                    octaves: int = 0, persistence: float = 0.5) -> (PixelArray, PixelArray):
-    num_of_levels = l1 + l2 + l3 + b + h1 + h2 + h3
+    num_of_levels = l1 + l2 + l3 + b + h1 + h2 + h3 + 2
 
     level_order = [-1] * l1 + [-2] * l2 + [-3] * l3 + [0] * b + [1] * h1 + [2] * h2 + [3] * h3
     random.shuffle(level_order)
+    level_order = [-random.randint(2, 3)] + level_order + [-random.randint(2, 3)]
 
     mean_width = rect.w / num_of_levels
     min_level_width = int(mean_width * 0.5)
@@ -571,7 +578,8 @@ def perlin_fusion(rect: Rectangle, mask: PixelArray, h_start_prob: float, h_end_
     return pixels
 
 
-def tunnel_entry_points(surface: PixelArray, slope: float, min_size: int = 10, reset_interval: int = 10) -> PixelArray:
+def tunnel_entry_points(surface: PixelArray, slope: float, min_size: int = 10, max_size: int = 50) -> List[
+    PixelArray]:
     lx = None
     ly = None
     entry_points = []
@@ -583,10 +591,8 @@ def tunnel_entry_points(surface: PixelArray, slope: float, min_size: int = 10, r
             continue
         m = (y - ly) / (x - lx)
         if abs(m) > slope:
-            current_points.append((x, y))
-            if len(current_points) % reset_interval == 0:
-                lx = x
-                ly = y
+            if len(current_points) < max_size:
+                current_points.append((x, y))
             continue
         elif len(current_points) >= min_size:
             entry_points.append(current_points)
@@ -608,8 +614,8 @@ def ore_feasibility_check(rect: Rectangle, mask: PixelArray, count: int):
 
 def create_ore(rect: Rectangle, mask: PixelArray, min_size: int, max_size: int, count: int,
                iterations: int = 3) -> PixelArray:
-    grid = Grid.from_pixels(rect, mask, 1)
-    grid.lock(1)
+    grid = Grid.from_pixels(rect, mask, -1)
+    grid.lock(-1)
 
     pixels = []
     while len(pixels) < count and ore_feasibility_check(rect, mask + pixels, count) and iterations > 0:
@@ -628,7 +634,7 @@ def create_ore(rect: Rectangle, mask: PixelArray, min_size: int, max_size: int, 
 def create_water_helper(rect: Rectangle, prob_per_cave: float) -> List[PixelArray]:
     global WATER_HEIGHT_MIN, WATER_HEIGHT_MAX, MaterialMap
     grid = MaterialMap.grid(rect, {Material.CAVE_BACKGROUND: 1}, 0)
-    caves = extract_regions(rect, grid.extract(1))
+    caves = extract_regions(grid, 1)
     results = []
     for cave in caves:
         if random.random() <= prob_per_cave:
@@ -659,10 +665,11 @@ def create_surface_cave_helper(rect: Rectangle, mask: PixelArray, config_seq: Tu
                                min_size: int = 75, max_size: int = 10000):
     global MaterialMap
     grid = MaterialMap.grid(rect,
-                            {Material.CAVE_BACKGROUND: 1, Material.COPPER: 1, Material.GOLD: 1, Material.STONE: 1}, 0)
+                            {Material.CAVE_BACKGROUND: -1, Material.COPPER: -1, Material.GOLD: -1, Material.STONE: -1},
+                            0)
     for x, y in mask:
-        grid[x, y] = 1
-    grid.lock(1)
+        grid[x, y] = -1
+    grid.lock(-1)
     return create_cave(grid, config_seq, birth_chance, min_size, max_size)
 
 
@@ -1032,7 +1039,7 @@ if __name__ == '__main__':
                 raise err
 
             # CREATE TOP CAVES
-            global TUNNELS_MIN, TUNNELS_MAX, TUNNEL_PATHS_MIN, TUNNEL_PATHS_MAX, TUNNEL_WIDTH
+            global TUNNELS_MIN, TUNNELS_MAX, TUNNEL_PATHS_MIN, TUNNEL_PATHS_MAX, TUNNEL_PATH_WIDTH_MIN, TUNNEL_PATH_WIDTH_MAX, TUNNEL_WIDTH_MIN, TUNNEL_WIDTH_MAX
             top_cave_futures = {}
             top_caves = []
             for node in tree:
@@ -1051,7 +1058,7 @@ if __name__ == '__main__':
                     top_cave_futures[node] = cave_future
 
             # CREATE SURFACE TUNNELS
-            tunnel_set = tunnel_entry_points(grass, 0.4, 25, 50)
+            tunnel_set = tunnel_entry_points(grass, 0.4, TUNNEL_WIDTH_MIN, TUNNEL_WIDTH_MAX)
             random.shuffle(tunnel_set)
             tunnel_count = random.randint(TUNNELS_MIN,
                                           TUNNELS_MAX if len(tunnel_set) > TUNNELS_MAX else len(tunnel_set))
@@ -1066,16 +1073,15 @@ if __name__ == '__main__':
                 Cv = pygame.Vector2(max(tunnel_points, key=itemgetter(1)))
 
                 d = Q.x - P.x
+                assert d > TUNNEL_WIDTH_MIN
+                assert d < TUNNEL_WIDTH_MAX
+
                 if P.y > Q.y:  # Q4
-                    B = pygame.Vector2(random.randint(int(Q.x) + int(0.5 * d), int(Q.x + int(1.5 * d))), Y)
+                    B = pygame.Vector2(random.randint(int(Q.x) + int(0.5 * d), int(Q.x + int(d))), Y)
                     A = pygame.Vector2(random.randint(int(P.x) + int(0.5 * d), int(B.x) - int(d / 2)), Y)
                 else:  # Q3
-                    A = pygame.Vector2(random.randint(int(P.x - int(1.5 * d)), int(P.x) - int(0.5 * d)), Y)
+                    A = pygame.Vector2(random.randint(int(P.x - int(d)), int(P.x) - int(0.5 * d)), Y)
                     B = pygame.Vector2(random.randint(int(A.x) + int(d / 2), int(Q.x) - int(0.5 * d)), Y)
-
-                if DEBUG:
-                    Draw.line(P, A, RED, 5)
-                    Draw.line(Q, B, RED, 5)
 
                 APm = (P.y - A.y) / (P.x - A.x)
                 BQm = (Q.y - B.y) / (Q.x - B.x)
@@ -1118,7 +1124,7 @@ if __name__ == '__main__':
                     magnitudes.append(mag)
                 cave_magnitude = list(zip(magnitudes, top_caves))
                 cave_magnitude.sort(key=itemgetter(0))
-                caves = tuple(map(itemgetter(1), cave_magnitude[:3]))
+                caves = tuple(map(itemgetter(1), cave_magnitude[:1]))
                 cave = random.choice(caves)
 
                 CP = pygame.Vector2(cave.get_center())
@@ -1126,46 +1132,47 @@ if __name__ == '__main__':
                     CP.x += 1
                 points.append(CP)
 
-                min_x = P.x if P.x < A.x else A.x
-                max_x = Q.x if Q.x > B.x else B.x
-                min_y = P.y if P.y < Q.y else Q.y
-                max_y = A.y if A.y > B.y else B.y
-                min_x = cave.x if cave.x < min_x else min_x
-                max_x = cave.x + cave.w if cave.x + cave.h > max_x else max_x
-                rect = Rectangle(min_x, min_y, max_x - min_x, max_y - min_y + cave.h)
-
-                # Draw.outline(rect, RED)
-                # Draw.outline(cave, BLUE)
+                min_x = min(P.x, A.x, cave.x)
+                max_x = max(Q.x, B.x, cave.x + cave.w)
+                min_y = min(P.y, Q.y)
+                max_y = max(A.y, Q.y, cave.y + cave.h)
+                rect = Rectangle(min_x - TUNNEL_PATH_WIDTH_MAX, min_y, (max_x - min_x) + 2 * TUNNEL_PATH_WIDTH_MAX,
+                                 max_y - min_y)
 
                 # prepare for cellular automation
-                grid = Grid.from_rect(rect, 2)
+                grid = Grid.from_rect(rect, -1)
                 for P1, P2 in zip(points, points[1:]):
                     pixels_outer = dict.fromkeys(
-                        pixels_between((int(P1.x), int(P1.y)), (int(P2.x), int(P2.y)), TUNNEL_WIDTH + 7),
+                        pixels_between((int(P1.x), int(P1.y)), (int(P2.x), int(P2.y)), TUNNEL_PATH_WIDTH_MAX),
                         True)
                     for x, y in pixels_outer.keys():
-                        try:
-                            grid[x, y] = 0
-                        except IndexError:
-                            pass
+                        grid[x, y] = 0
 
                 for P1, P2 in zip(points, points[1:]):
                     pixels_inner = dict.fromkeys(
-                        pixels_between((int(P1.x), int(P1.y)), (int(P2.x), int(P2.y)), TUNNEL_WIDTH),
+                        pixels_between((int(P1.x), int(P1.y)), (int(P2.x), int(P2.y)), TUNNEL_PATH_WIDTH_MIN),
                         True)
                     for x, y in pixels_inner.keys():
-                        try:
-                            grid[x, y] = 1
-                        except IndexError:
-                            pass
-                grid.lock(2)
+                        grid[x, y] = 1
 
+                if DEBUG:
+                    for P1, P2 in zip(points, points[1:]):
+                        Draw.pixels(
+                            pixels_between((int(P1.x), int(P1.y)), (int(P2.x), int(P2.y)), TUNNEL_PATH_WIDTH_MAX),
+                            RED)
+                    Draw.line(P, A, BLUE, 3)
+                    Draw.line(Q, B, BLUE, 3)
+                    Draw.outline(rect, RED)
+                    Draw.outline(cave, BLUE)
+
+                grid.lock(-1)
+                grid.lock(1)
+
+                # cellular automata
                 for x, y in grid.extract(0):
-                    grid[x, y] = 1 if random.random() > 0.5 else 0
+                    grid[x, y] = 1 if random.random() > 0.45 else 0
                 for step in range(4):
-                    grid = cave_cellular_step(rect, grid, 4, 3)
-                for step in range(1):
-                    grid = cave_cellular_step(rect, grid, 1, 1)
+                    grid = cave_cellular_step(grid, 3, 4)
                 tunnel = grid.extract(1)
                 Draw.pixels(tunnel, Colors.DIRT)
                 MaterialMap[tunnel] = Material.CAVE_BACKGROUND
