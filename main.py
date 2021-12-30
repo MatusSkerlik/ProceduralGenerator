@@ -30,6 +30,7 @@ TUNNEL_PATH_WIDTH_MIN = 5
 TUNNEL_PATH_WIDTH_MAX = 10
 TUNNEL_WIDTH_MIN = 25
 TUNNEL_WIDTH_MAX = 50
+TREE_COUNT = 30
 DEBUG = False
 
 # dynamic globals
@@ -106,6 +107,9 @@ class Colors:
     SAND = (255, 218, 56)
     WATER = (14, 59, 192)
     LAVA = (251, 31, 8)
+
+    LOG = (100, 70, 49)
+    LEAF = (19, 145, 62)
 
 
 Color = Tuple[int, int, int]
@@ -231,6 +235,46 @@ class Grid:
         for x, y in pixels:
             grid[x, y] = state
         return grid
+
+
+class PaintingAgent:
+    def __init__(self, x: int, y: int):
+        self.x = x
+        self.y = y
+        self._color = None
+        self._restore_pos = x, y
+
+    def _draw(self):
+        Draw.pixels([(self.x, self.y)], self._color)
+
+    def color(self, color: Color):
+        self._color = color
+
+    def save(self):
+        self._restore_pos = self.x, self.y
+
+    def restore(self):
+        self.x, self.y = self._restore_pos
+
+    def up(self):
+        self.y += -1
+        self._draw()
+
+    def down(self):
+        self.y += 1
+        self._draw()
+
+    def left(self):
+        self.x += -1
+        self._draw()
+
+    def right(self):
+        self.x += 1
+        self._draw()
+
+    def to(self, x: int, y: int):
+        self.x = x
+        self.y = y
 
 
 def get_bounding_rect(pixels) -> Rectangle:
@@ -367,7 +411,7 @@ def pixels_between(p1: Tuple[int, int], p2: Tuple[int, int], width: int) -> Pixe
     return list(pixels.keys())
 
 
-def make_grid(rect: Rectangle, surface: PixelArray, mapping: Dict[Material, int], default_state: int = 0) -> Grid:
+def make_grid(rect: Rectangle, surface, mapping: Dict[Material, int], default_state: int = 0) -> Grid:
     grid = Grid.from_rect(rect)
     pixel_buffer = pygame.surfarray.pixels3d(surface)
 
@@ -654,8 +698,13 @@ def create_ore_helper(rect: Rectangle, min_size: int, max_size: int, count: int,
 def create_surface_ore_helper(rect: Rectangle, mask: PixelArray, min_size: int, max_size: int, count: int,
                               iterations: int = 3):
     global MaterialMap
-    grid = MaterialMap.grid(rect,
-                            {Material.CAVE_BACKGROUND: 1, Material.COPPER: 1, Material.GOLD: 1, Material.STONE: 1}, 0)
+    grid = MaterialMap.grid(rect, {
+        Material.CAVE_BACKGROUND: 1,
+        Material.COPPER: 1,
+        Material.GOLD: 1,
+        Material.STONE: 1,
+        Material.SAND: 1
+    }, 0)
     mask += grid.extract(1)
     return create_ore(rect, mask, min_size, max_size, count, iterations)
 
@@ -664,13 +713,133 @@ def create_surface_cave_helper(rect: Rectangle, mask: PixelArray, config_seq: Tu
                                birth_chance: float,
                                min_size: int = 75, max_size: int = 10000):
     global MaterialMap
-    grid = MaterialMap.grid(rect,
-                            {Material.CAVE_BACKGROUND: -1, Material.COPPER: -1, Material.GOLD: -1, Material.STONE: -1},
-                            0)
+    grid = MaterialMap.grid(rect, {
+        Material.CAVE_BACKGROUND: -1,
+        Material.COPPER: -1,
+        Material.GOLD: -1,
+        Material.STONE: -1,
+        Material.SAND: -1
+    }, 0)
     for x, y in mask:
         grid[x, y] = -1
     grid.lock(-1)
     return create_cave(grid, config_seq, birth_chance, min_size, max_size)
+
+
+def create_tree_type1(x: int, y: int, height: int):
+    agent = PaintingAgent(x, y)
+    agent.color(Colors.LOG)
+
+    for _ in range(height):
+        agent.up()
+
+    agent.color(Colors.LEAF)
+    agent.up()
+    agent.up()
+    agent.up()
+    agent.save()
+    agent.left()
+    agent.left()
+    agent.left()
+    agent.restore()
+    agent.right()
+    agent.right()
+    agent.right()
+    agent.restore()
+    agent.down()
+    agent.save()
+    agent.left()
+    agent.left()
+    agent.restore()
+    agent.right()
+    agent.right()
+    agent.restore()
+    agent.down()
+    agent.save()
+    agent.left()
+    agent.restore()
+    agent.right()
+    agent.restore()
+    agent.down()
+
+
+def create_tree_type2(x: int, y: int, height: int):
+    agent = PaintingAgent(x, y)
+    agent.color(Colors.LOG)
+
+    for _ in range(height):
+        agent.up()
+
+    agent.color(Colors.LEAF)
+    agent.up()
+    agent.up()
+    agent.up()
+    agent.up()
+    agent.up()
+    agent.save()
+    agent.left()
+    agent.down()
+    agent.down()
+    agent.down()
+    agent.down()
+    agent.restore()
+    agent.right()
+    agent.down()
+    agent.down()
+    agent.down()
+    agent.down()
+    agent.restore()
+    agent.down()
+    agent.left()
+    agent.left()
+    agent.down()
+    agent.down()
+    agent.up()
+    agent.left()
+    agent.restore()
+    agent.down()
+    agent.right()
+    agent.right()
+    agent.down()
+    agent.down()
+
+
+def create_ocean_desert_left(surface: PixelArray, width: int) -> PixelArray:
+    global Surface
+
+    x0, y0 = surface[0]
+    height = Surface.y + Surface.h - y0
+    m = height / width
+
+    pixels = []
+    h = height
+    i = 0
+    for _ in range(0, width):
+        x1, y1 = surface[i]
+        h -= m
+        for y in range(y1, y1 + int(h) + random.randint(0, 1)):
+            pixels.append((x1, y))
+        i += 1
+    return pixels
+
+
+def create_ocean_desert_right(surface: PixelArray, width: int) -> PixelArray:
+    global Surface
+
+    x0, y0 = surface[-1]
+    height = Surface.y + Surface.h - y0
+    m = height / width
+
+    pixels = []
+    h = height
+    i = len(surface) - 1
+    for _ in range(0, width):
+        x1, y1 = surface[i]
+        h -= m
+        for y in range(y1, y1 + int(h) + random.randint(0, 1)):
+            pixels.append((x1, y))
+        i -= 1
+    return pixels
 
 
 Space = Rectangle(0, 0, WIDTH, 1 * HEIGHT / 10)
@@ -1013,10 +1182,41 @@ if __name__ == '__main__':
             if not scene_thread_running:
                 return
 
+            # CREATE OCEAN DESERT LEFT
+            sand = create_ocean_desert_left(grass, 100)
+            Draw.pixels(sand, material=Material.SAND)
+            SAND += len(sand)
+            MaterialMap[sand] = Material.SAND
+
+            # CREATE OCEAN DESERT RIGHT
+            sand = create_ocean_desert_right(grass, 100)
+            Draw.pixels(sand, material=Material.SAND)
+            SAND += len(sand)
+            MaterialMap[sand] = Material.SAND
+
             # CREATE GRASS
             Draw.pixels(grass, Colors.GRASS)
             GRASS += len(grass)
             MaterialMap[grass] = Material.GRASS
+
+            if not scene_thread_running:
+                return
+
+            # CREATE TREES
+            global TREE_COUNT
+
+            forbidden_x = []
+            for _ in range(TREE_COUNT):
+                sp = random.choice(grass)
+                while sp[0] in forbidden_x:
+                    sp = random.choice(grass)
+                for x in range(sp[0] - 6, sp[0] + 6):
+                    forbidden_x.append(x)
+
+                if random.random() > 0.5:
+                    create_tree_type1(*sp, random.randint(12, 18))
+                else:
+                    create_tree_type2(*sp, random.randint(12, 18))
 
             if not scene_thread_running:
                 return
