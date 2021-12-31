@@ -24,7 +24,6 @@ class TreeNode:
         self.parent = None
         self.left = None
         self.right = None
-        self.depth = 0
 
     @property
     def leaf(self):
@@ -41,34 +40,31 @@ class BSPTree:
     def __init__(self, x: int, y: int, w: int, h: int):
         self.root = TreeNode(x, y, w, h)
 
-    def grow(self, depth: int):
+    def grow(self, min_width: int, min_height: int):
         del self.root.left
         del self.root.right
         self.root.left = None
         self.root.right = None
         leaves = [self.root]
-
-        for depth in range(depth):
-            new_leaves = []
-            # breadth-first generation
-            while len(leaves) > 0:
-                leaf = leaves.pop()
-                # handle disproportions of ratio between width and height
-                ratio = leaf.w / leaf.h
-                vertical = False
-                if ratio > (random.randint(75, 150) / 100):
-                    vertical = True
-                ###########################################################
-                a, b = _bsp(leaf.x, leaf.y, leaf.x + leaf.w, leaf.y + leaf.h, vertical, 0.3, 0.3)
-                leaf.left = TreeNode(a[0], a[1], a[2] - a[0], a[3] - a[1])
+        # breadth-first generation
+        while len(leaves) > 0:
+            leaf = leaves.pop()
+            # handle disproportions of ratio between width and height
+            ratio = leaf.w / leaf.h
+            vertical = False
+            if ratio > (random.randint(75, 150) / 100):
+                vertical = True
+            a, b = _bsp(leaf.x, leaf.y, leaf.x + leaf.w, leaf.y + leaf.h, vertical, 0.3, 0.3)
+            # grow condition
+            lx, ly, lw, lh = a[0], a[1], a[2] - a[0], a[3] - a[1]
+            rx, ry, rw, rh = b[0], b[1], b[2] - b[0], b[3] - b[1]
+            if lw > min_width and lh > min_height and rw > min_width and rh > min_height:
+                leaf.left = TreeNode(lx, ly, lw, lh)
                 leaf.left.parent = leaf
-                leaf.left.depth = depth
-                leaf.right = TreeNode(b[0], b[1], b[2] - b[0], b[3] - b[1])
+                leaf.right = TreeNode(rx, ry, rw, rh)
                 leaf.right.parent = leaf
-                leaf.right.depth = depth
-                new_leaves.append(leaf.left)
-                new_leaves.append(leaf.right)
-            leaves = new_leaves
+                leaves.append(leaf.left)
+                leaves.append(leaf.right)
 
     def __iter__(self):
         leaves = [self.root]

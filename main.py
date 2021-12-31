@@ -7,7 +7,7 @@ import threading
 from enum import Enum, auto
 from functools import partial, lru_cache
 from operator import itemgetter
-from typing import Tuple, List, Dict, Union
+from typing import Tuple, List, Dict, Union, Callable
 
 from noise import pnoise2
 
@@ -28,9 +28,13 @@ TUNNEL_PATHS_MIN = 3
 TUNNEL_PATHS_MAX = 4
 TUNNEL_PATH_WIDTH_MIN = 5
 TUNNEL_PATH_WIDTH_MAX = 10
-TUNNEL_WIDTH_MIN = 25
+TUNNEL_WIDTH_MIN = 20
 TUNNEL_WIDTH_MAX = 50
 TREE_COUNT = 30
+MIN_CAVE_PIXELS = 250
+MIN_CAVE_REGION_WIDTH = 35
+MIN_CAVE_REGION_HEIGHT = 35
+LAKE_COUNT = 10
 DEBUG = False
 
 # dynamic globals
@@ -403,10 +407,10 @@ def pixels_between(p1: Tuple[int, int], p2: Tuple[int, int], width: int) -> Pixe
 
     pixels = {}
     c = -int(width / 2)
-    for x in range(x0, x1):
-        y = int(eq_x(x))
+    for x in range(x0 * 10, x1 * 10):
+        y = int(eq_x(x / 10))
         for x_, y_ in circle:
-            pixels[x + x_ + c, y + y_ + c] = True
+            pixels[int(x / 10) + x_ + c, y + y_ + c] = True
 
     return list(pixels.keys())
 
@@ -622,33 +626,31 @@ def perlin_fusion(rect: Rectangle, mask: PixelArray, h_start_prob: float, h_end_
     return pixels
 
 
-def tunnel_entry_points(surface: PixelArray, slope: float, min_size: int = 10, max_size: int = 50) -> List[
-    PixelArray]:
-    lx = None
-    ly = None
-    entry_points = []
+def find_points_between_slopes(surface: PixelArray, s0: float, s1: float,
+                               min_size: int = 10, max_size: int = 50) -> List[PixelArray]:
+    lx, ly = surface[0]
+    points = []
     current_points = []
-    for x, y in surface:
-        if lx is None and ly is None:
-            lx = x
-            ly = y
-            continue
+    for x, y in surface[1:]:
         m = (y - ly) / (x - lx)
-        if abs(m) > slope:
+        if s0 <= m <= s1:
             if len(current_points) < max_size:
                 current_points.append((x, y))
-            continue
-        elif len(current_points) >= min_size:
-            entry_points.append(current_points)
+            else:
+                points.append(current_points)
+                current_points = []
+                lx = x
+                ly = y
+        elif min_size <= len(current_points):
+            points.append(current_points)
             current_points = []
             lx = x
             ly = y
-            continue
         else:
             current_points = []
             lx = x
             ly = y
-    return entry_points
+    return points
 
 
 # TODO
@@ -703,7 +705,8 @@ def create_surface_ore_helper(rect: Rectangle, mask: PixelArray, min_size: int, 
         Material.COPPER: 1,
         Material.GOLD: 1,
         Material.STONE: 1,
-        Material.SAND: 1
+        Material.SAND: 1,
+        Material.WATER: 1,
     }, 0)
     mask += grid.extract(1)
     return create_ore(rect, mask, min_size, max_size, count, iterations)
@@ -718,7 +721,8 @@ def create_surface_cave_helper(rect: Rectangle, mask: PixelArray, config_seq: Tu
         Material.COPPER: -1,
         Material.GOLD: -1,
         Material.STONE: -1,
-        Material.SAND: -1
+        Material.SAND: -1,
+        Material.WATER: -1,
     }, 0)
     for x, y in mask:
         grid[x, y] = -1
@@ -804,6 +808,29 @@ def create_tree_type2(x: int, y: int, height: int):
     agent.down()
 
 
+def create_lianas(rect: Rectangle, max_height: int, prob: Union[float, Callable]):
+    global MaterialMap
+
+    grid = MaterialMap.grid(rect, {
+        Material.DIRT: 1,
+        Material.STONE: 1,
+    }, -1)
+    grid.lock(-1)
+
+    agent = PaintingAgent(0, 0)
+    agent.color(Colors.JUNGLE_GRASS)
+    p = prob if isinstance(prob, Callable) else (lambda _: prob)
+    for x, y in grid.unlocked():
+        agent.to(x, y)
+        top, right, bottom, left = nbs_neumann(x, y, grid)
+        if top == 1 and bottom == -1 and random.random() < p(y - grid.y):
+            for y_ in range(max_height):
+                if y + y_ < grid.y + grid.h - 1:
+                    _, _, b, _ = nbs_neumann(x, y + y_, grid)
+                    if b == -1:
+                        agent.down()
+
+
 def create_ocean_desert_left(surface: PixelArray, width: int) -> PixelArray:
     global Surface
 
@@ -840,6 +867,69 @@ def create_ocean_desert_right(surface: PixelArray, width: int) -> PixelArray:
             pixels.append((x1, y))
         i -= 1
     return pixels
+
+
+def create_lake(surface: PixelArray, at: int, width: int, height: int) -> (PixelArray, PixelArray):
+    assert surface[0][0] < at < surface[-1][0]
+    assert surface[0][0] < at + width < surface[-1][0]
+
+    i = 0
+    for _, y in surface:
+        if _ == at:
+            break
+        i += 1
+
+    x0, y0 = surface[i]
+    x1, y1 = surface[i + width]
+    ys = max(y0, y1)
+
+    w0 = random.randint(1, width - 1)
+    w2 = random.randint(1, width - w0)
+    w1 = width - w0 - w2
+
+    if random.random():
+        tmp = int(w0)
+        w0 = w2
+        w2 = tmp
+
+    m0 = height / w0
+    m1 = height / w2
+
+    pixels = []
+    ch = 0
+    for _ in range(0, width):
+        x = x0 + _
+        if _ < w0:
+            ch += m0
+        elif _ < w0 + w1:
+            pass
+        else:
+            ch -= m1
+
+        for y in range(ys, ys + int(ch)):
+            pixels.append((x, y))
+
+    global Surface
+    removal = []
+    for _ in range(0, width):
+        y_ = surface[i + _][1]
+        if y_ < ys:
+            for y in range(y_, ys):
+                removal.append((x0 + _, y))
+
+    rect = get_bounding_rect(pixels)
+    rect.h += int(width / 10)
+    grid = Grid.from_pixels(rect, pixels, 1)
+    grid.lock(1)
+
+    for x, y in grid.unlocked():
+        grid[x, y] = 1 if random.random() > 0.7 else 0
+    for _ in range(2):
+        grid = cave_cellular_step(grid, 4, 4)
+    regions = extract_regions(grid, 1)
+    region = max(regions, key=lambda x: len(x))
+
+    return region, removal
 
 
 Space = Rectangle(0, 0, WIDTH, 1 * HEIGHT / 10)
@@ -1038,10 +1128,11 @@ if __name__ == '__main__':
         def run():
             global WIDTH, HEIGHT, DEBUG
             global DIRT, MUD, SAND, WATER, LAVA, GRASS, COPPER, STONE
+            global MIN_CAVE_REGION_WIDTH, MIN_CAVE_REGION_HEIGHT
             global MaterialMap
 
             tree = BSPTree(0, Underground.y, WIDTH, Underground.h + Cavern.h)
-            tree.grow(9)
+            tree.grow(min_width=MIN_CAVE_REGION_WIDTH, min_height=MIN_CAVE_REGION_HEIGHT)
 
             PixelMaterialColorMap.add_rect(Space, {
                 Material.BACKGROUND: Colors.BACKGROUND_SPACE,
@@ -1085,6 +1176,9 @@ if __name__ == '__main__':
                 Draw.outline(Underground, MAGENTA)
                 Draw.outline(Cavern, MAGENTA)
                 Draw.outline(Underworld, MAGENTA)
+                for node in tree:
+                    if node.leaf:
+                        Draw.outline(Rectangle(node.x, node.y, node.w, node.h), RED)
 
             # CREATE SURFACE
             surface_w_offset_left = 0.075 * WIDTH
@@ -1182,18 +1276,6 @@ if __name__ == '__main__':
             if not scene_thread_running:
                 return
 
-            # CREATE OCEAN DESERT LEFT
-            sand = create_ocean_desert_left(grass, 100)
-            Draw.pixels(sand, material=Material.SAND)
-            SAND += len(sand)
-            MaterialMap[sand] = Material.SAND
-
-            # CREATE OCEAN DESERT RIGHT
-            sand = create_ocean_desert_right(grass, 100)
-            Draw.pixels(sand, material=Material.SAND)
-            SAND += len(sand)
-            MaterialMap[sand] = Material.SAND
-
             # CREATE GRASS
             Draw.pixels(grass, Colors.GRASS)
             GRASS += len(grass)
@@ -1202,21 +1284,44 @@ if __name__ == '__main__':
             if not scene_thread_running:
                 return
 
-            # CREATE TREES
-            global TREE_COUNT
-
             forbidden_x = []
-            for _ in range(TREE_COUNT):
-                sp = random.choice(grass)
-                while sp[0] in forbidden_x:
-                    sp = random.choice(grass)
-                for x in range(sp[0] - 6, sp[0] + 6):
-                    forbidden_x.append(x)
 
-                if random.random() > 0.5:
-                    create_tree_type1(*sp, random.randint(12, 18))
-                else:
-                    create_tree_type2(*sp, random.randint(12, 18))
+            # CREATE LAKE
+            # heuristics to place lake
+            global LAKE_COUNT
+            lake_set = find_points_between_slopes(grass, -0.1, .1, 35, 75)
+            for _ in range(LAKE_COUNT if len(lake_set) > LAKE_COUNT else len(lake_set)):
+                lake_points = random.choice(lake_set)
+                x0, x1 = lake_points[0][0], lake_points[-1][0]
+                for x in range(x0, x1):
+                    forbidden_x.append(x)
+                w = x1 - x0
+                lake, air = create_lake(grass, x0, w, random.randint(10, 25))
+                MaterialMap[lake] = Material.WATER
+                MaterialMap[air] = Material.NONE
+                WATER += len(lake)
+                DIRT -= len(lake)
+                DIRT -= len(air)
+                Draw.pixels(lake, Colors.WATER)
+                Draw.pixels(air, Colors.BACKGROUND_SURFACE)
+
+            if not scene_thread_running:
+                return
+
+            # CREATE OCEAN DESERT LEFT
+            sand = create_ocean_desert_left(grass, 100)
+            Draw.pixels(sand, material=Material.SAND)
+            SAND += len(sand)
+            MaterialMap[sand] = Material.SAND
+
+            if not scene_thread_running:
+                return
+
+            # CREATE OCEAN DESERT RIGHT
+            sand = create_ocean_desert_right(grass, 100)
+            Draw.pixels(sand, material=Material.SAND)
+            SAND += len(sand)
+            MaterialMap[sand] = Material.SAND
 
             if not scene_thread_running:
                 return
@@ -1239,7 +1344,8 @@ if __name__ == '__main__':
                 raise err
 
             # CREATE TOP CAVES
-            global TUNNELS_MIN, TUNNELS_MAX, TUNNEL_PATHS_MIN, TUNNEL_PATHS_MAX, TUNNEL_PATH_WIDTH_MIN, TUNNEL_PATH_WIDTH_MAX, TUNNEL_WIDTH_MIN, TUNNEL_WIDTH_MAX
+            global TUNNELS_MIN, TUNNELS_MAX, TUNNEL_PATHS_MIN, TUNNEL_PATHS_MAX, TUNNEL_PATH_WIDTH_MIN, \
+                TUNNEL_PATH_WIDTH_MAX, TUNNEL_WIDTH_MIN, TUNNEL_WIDTH_MAX
             top_cave_futures = {}
             top_caves = []
             for node in tree:
@@ -1258,13 +1364,17 @@ if __name__ == '__main__':
                     top_cave_futures[node] = cave_future
 
             # CREATE SURFACE TUNNELS
-            tunnel_set = tunnel_entry_points(grass, 0.4, TUNNEL_WIDTH_MIN, TUNNEL_WIDTH_MAX)
+            tunnel_set = find_points_between_slopes(grass, 0.4, 3, TUNNEL_WIDTH_MIN, TUNNEL_WIDTH_MAX)
+            tunnel_set += find_points_between_slopes(grass, -3, -0.4, TUNNEL_WIDTH_MIN, TUNNEL_WIDTH_MAX)
             random.shuffle(tunnel_set)
             tunnel_count = random.randint(TUNNELS_MIN,
                                           TUNNELS_MAX if len(tunnel_set) > TUNNELS_MAX else len(tunnel_set))
 
             for _ in range(tunnel_count):
                 tunnel_points = tunnel_set[_]
+                assert len(tunnel_points) >= TUNNEL_WIDTH_MIN
+                assert len(tunnel_points) <= TUNNEL_WIDTH_MAX
+
                 Y = Surface.y + Surface.h
                 P = pygame.Vector2(tunnel_points[0])
                 Q = pygame.Vector2(tunnel_points[-1])
@@ -1273,8 +1383,6 @@ if __name__ == '__main__':
                 Cv = pygame.Vector2(max(tunnel_points, key=itemgetter(1)))
 
                 d = Q.x - P.x
-                assert d > TUNNEL_WIDTH_MIN
-                assert d < TUNNEL_WIDTH_MAX
 
                 if P.y > Q.y:  # Q4
                     B = pygame.Vector2(random.randint(int(Q.x) + int(0.5 * d), int(Q.x + int(d))), Y)
@@ -1377,6 +1485,26 @@ if __name__ == '__main__':
                 Draw.pixels(tunnel, Colors.DIRT)
                 MaterialMap[tunnel] = Material.CAVE_BACKGROUND
 
+                # cosmetic lianas
+                create_lianas(rect, 10, lambda _: (rect.h - _) / rect.h)
+
+            # CREATE TREES
+            global TREE_COUNT
+            for _ in range(TREE_COUNT):
+                sp = random.choice(grass)
+                while sp[0] in forbidden_x:
+                    sp = random.choice(grass)
+                for x in range(sp[0] - 6, sp[0] + 6):
+                    forbidden_x.append(x)
+
+                if random.random() > 0.5:
+                    create_tree_type1(*sp, random.randint(12, 18))
+                else:
+                    create_tree_type2(*sp, random.randint(12, 18))
+
+            if not scene_thread_running:
+                return
+
             # CREATE DEPOSIT STONE
             def success1(pixels):
                 global STONE, MaterialMap
@@ -1421,6 +1549,8 @@ if __name__ == '__main__':
                 return
 
             # CREATE OTHER CAVES
+            global MIN_CAVE_PIXELS
+
             cave_futures = {}
             for node in tree:
                 if node.leaf and not node.y == Surface.y + Surface.h:
@@ -1434,10 +1564,10 @@ if __name__ == '__main__':
 
                     if random.random() > 0.2:
                         func = partial(create_cave, rect, ((5, 1),) * 8 + ((5, 8),) * 4,
-                                       .75)
+                                       .75, min_size=MIN_CAVE_PIXELS)
                     else:
                         func = partial(create_cave, rect, ((3, 4),) * 2 + ((4, 4),) * 2,
-                                       .575)
+                                       .575, min_size=MIN_CAVE_PIXELS)
 
                     cave_future = ConcurrentExecutor.submit(func, success, error)
                     cave_future.after(*top_cave_futures.values(), subscribe_for_result=False)
