@@ -86,6 +86,8 @@ class Material(Enum):
     LAVA = auto()
     SAND = auto()
     GRASS = auto()
+    SNOW = auto()
+    ICE = auto()
 
 
 class Colors:
@@ -96,7 +98,7 @@ class Colors:
     BACKGROUND_UNDERGROUND = (150, 107, 76)
     BACKGROUND_CAVERN = (127, 127, 127)
     BACKGROUND_UNDERWORLD = (0, 0, 0)
-
+    BACKGROUND_ICE_BIOME = (74, 67, 60)
     STONE = (53, 53, 62)
     DIRT = (88, 63, 50)
     MUD = (94, 68, 71)
@@ -114,6 +116,8 @@ class Colors:
 
     LOG = (100, 70, 49)
     LEAF = (19, 145, 62)
+    SNOW = (211, 236, 241)
+    ICE = (144, 195, 232)
 
 
 Color = Tuple[int, int, int]
@@ -172,6 +176,76 @@ class Rectangle:
         return "%d %d %d %d \n" % (self.x, self.y, self.w, self.h)
 
 
+class Polygon:
+    def __init__(self, vertices: PixelArray):
+        self.vertices = vertices
+        self.equations = []
+        self.bounds = [
+            int(min(vertices, key=itemgetter(0))[0]),
+            int(min(vertices, key=itemgetter(1))[1]),
+            int(max(vertices, key=itemgetter(0))[0]),
+            int(max(vertices, key=itemgetter(1))[1])
+        ]
+
+        def eq(y, x0, y0, m):
+            return x0 + (y - y0) / m
+
+        def eq1(y, x):
+            return x
+
+        for v0, v1 in zip(vertices, vertices[1:] + [vertices[0]]):
+            x0, y0 = v0
+            x1, y1 = v1
+            if x0 != x1:
+                m = (y1 - y0) / (x1 - x0)
+                if m != 0:
+                    self.equations.append(partial(eq, x0=x0, y0=y0, m=m))
+                else:
+                    self.equations.append(None)
+            else:
+                self.equations.append(partial(eq1, x=x0))
+        assert len(self.vertices) == len(self.equations)
+
+    def __iter__(self):
+        return zip(self.vertices, self.vertices[1:] + [self.vertices[0]])
+
+    def __getitem__(self, item):
+        return tuple(self)[item]
+
+    def contains(self, x: int, y: int):
+        eq = []
+        i = 0
+        for v0, v1 in self:
+            x0, y0 = v0
+            x1, y1 = v1
+            if (y0 <= y <= y1) or (y1 <= y <= y0):
+                eq.append(self.equations[i])
+            i += 1
+
+        if len(eq) < 2:
+            return False
+
+        xs = []
+        for eq0, eq1 in zip(eq, eq[1:] + [eq[0]]):
+            if eq0 is not None and eq1 is not None:
+                xs.append((eq0(y), eq1(y)))
+
+        for x0, x1 in xs:
+            if (x0 < x < x1) or (x1 < x < x0):
+                return True
+        return False
+
+    @lru_cache()
+    def get_points(self):
+        points = []
+        minx, miny, maxx, maxy = self.bounds
+        for x in range(minx, maxx):
+            for y in range(miny, maxy):
+                if self.contains(x, y):
+                    points.append((x, y))
+        return points
+
+
 class Grid:
 
     def __init__(self, x: int, y: int, w: int, h: int, default_state: int = 0):
@@ -225,7 +299,7 @@ class Grid:
     def locked(self):
         return [(x, y) for x, y in self if self.is_locked(x, y)]
 
-    @lru_cache
+    @lru_cache()
     def unlocked(self):
         return [(x, y) for x, y in self if not self.is_locked(x, y)]
 
@@ -279,6 +353,65 @@ class PaintingAgent:
     def to(self, x: int, y: int):
         self.x = x
         self.y = y
+
+
+def create_convex_polygon(inner: Rectangle, outer: Rectangle, num_of_points: int):
+    global DEBUG
+
+    assert num_of_points % 4 == 0 and num_of_points <= 8
+
+    x0, y0 = inner.x, inner.y
+    x3, y3 = inner.x + inner.w, inner.y + inner.h
+    x4, y4 = outer.x, outer.y
+    x7, y7 = outer.x + outer.w, outer.y + outer.h
+
+    if DEBUG:
+        Draw.outline(Rectangle(x0, y4, x3 - x0, y0 - y4), RED)
+        Draw.outline(Rectangle(x3, y0, x7 - x3, y3 - y0), RED)
+        Draw.outline(Rectangle(x0, y3, x7 - x0, y7 - y3), RED)
+        Draw.outline(Rectangle(x4, y0, x0 - x4, y3 - y0), RED)
+        Draw.outline(inner, BLUE)
+        Draw.outline(outer, ORANGE)
+
+    c0 = c1 = c2 = c3 = int(num_of_points / 4)
+
+    points = []
+    tmp = []
+    for _ in range(c0):
+        cx = random.randint(x0, x3)
+        cy = random.randint(y4, y0)
+        tmp.append((cx, cy))
+    tmp.sort(key=itemgetter(0))
+    points.extend(tmp)
+
+    tmp = []
+    for _ in range(c1):
+        cx = random.randint(x3, x7)
+        cy = random.randint(y0, y3)
+        tmp.append((cx, cy))
+    tmp.sort(key=itemgetter(1))
+    points.extend(tmp)
+
+    tmp = []
+    for _ in range(c2):
+        cx = random.randint(x0, x3)
+        cy = random.randint(y3, y7)
+        tmp.append((cx, cy))
+    tmp.sort(key=itemgetter(0), reverse=True)
+    points.extend(tmp)
+
+    tmp = []
+    for _ in range(c3):
+        cx = random.randint(x4, x0)
+        cy = random.randint(y0, y3)
+        tmp.append((cx, cy))
+    tmp.sort(key=itemgetter(1), reverse=True)
+    points.extend(tmp)
+
+    if DEBUG:
+        for point in points:
+            pygame.draw.circle(Draw.surface, RED, point, 5)
+    return points
 
 
 def get_bounding_rect(pixels) -> Rectangle:
@@ -818,13 +951,13 @@ def create_lianas(rect: Rectangle, max_height: int, prob: Union[float, Callable]
     grid.lock(-1)
 
     agent = PaintingAgent(0, 0)
-    agent.color(Colors.JUNGLE_GRASS)
+    agent.color(Colors.LEAF)
     p = prob if isinstance(prob, Callable) else (lambda _: prob)
     for x, y in grid.unlocked():
         agent.to(x, y)
         top, right, bottom, left = nbs_neumann(x, y, grid)
         if top == 1 and bottom == -1 and random.random() < p(y - grid.y):
-            for y_ in range(max_height):
+            for y_ in range(random.randint(int(max_height / 2), max_height)):
                 if y + y_ < grid.y + grid.h - 1:
                     _, _, b, _ = nbs_neumann(x, y + y_, grid)
                     if b == -1:
@@ -945,7 +1078,12 @@ class PixelMaterialColorMap:
     _default_mapping = {
         Material.WATER: Colors.WATER,
         Material.LAVA: Colors.LAVA,
-        Material.SAND: Colors.SAND
+        Material.SAND: Colors.SAND,
+        Material.STONE: Colors.BACKGROUND_CAVERN,
+        Material.DIRT: Colors.BACKGROUND_UNDERGROUND,
+        Material.MUD: Colors.MUD,
+        Material.COPPER: Colors.COPPER,
+        Material.GOLD: Colors.GOLD
     }
 
     @classmethod
@@ -1024,7 +1162,7 @@ if __name__ == '__main__':
         pygame.font.init()
         surface = pygame.display.set_mode([WIDTH, HEIGHT])
         font_size = 18
-        font = pygame.font.SysFont(None, font_size)
+        font = pygame.font.Font("font.ttf", font_size)
 
         def __init__(self):
             raise NotImplemented
@@ -1145,12 +1283,12 @@ if __name__ == '__main__':
 
             PixelMaterialColorMap.add_rect(Underground, {
                 Material.BACKGROUND: Colors.BACKGROUND_UNDERGROUND,
-                Material.CAVE_BACKGROUND: Colors.DIRT
+                Material.CAVE_BACKGROUND: Colors.DIRT,
             })
 
             PixelMaterialColorMap.add_rect(Cavern, {
                 Material.BACKGROUND: Colors.BACKGROUND_CAVERN,
-                Material.CAVE_BACKGROUND: Colors.STONE
+                Material.CAVE_BACKGROUND: Colors.STONE,
             })
 
             PixelMaterialColorMap.add_rect(Underworld, {
@@ -1158,12 +1296,20 @@ if __name__ == '__main__':
                 Material.CAVE_BACKGROUND: Colors.STONE
             })
 
+            ice_biome = Polygon([(200, 200), (400, 200), (600, 800), (100, 600)])
+            for x, y in ice_biome.get_points():
+                PixelMaterialColorMap.add_pixel(x, y, {
+                    Material.DIRT: Colors.SNOW,
+                    Material.STONE: Colors.ICE,
+                    Material.CAVE_BACKGROUND: Colors.BACKGROUND_ICE_BIOME
+                })
+
             MaterialMap[Space + Underworld] = Material.BACKGROUND
 
             Draw.rect(Space, Colors.BACKGROUND_SURFACE)
             Draw.rect(Surface, Colors.BACKGROUND_SURFACE)
-            Draw.rect(Underground, Colors.BACKGROUND_CAVERN)
-            Draw.rect(Cavern, Colors.BACKGROUND_CAVERN)
+            Draw.pixels(Underground, None, Material.STONE)
+            Draw.pixels(Cavern, None, Material.STONE)
             Draw.rect(Underworld, Colors.BACKGROUND_UNDERWORLD)
 
             STONE += Underground.w * Underground.h
@@ -1205,7 +1351,7 @@ if __name__ == '__main__':
                 persistence=0.12
             )
 
-            Draw.pixels(surface, Colors.BACKGROUND_UNDERGROUND)
+            Draw.pixels(surface, None, Material.DIRT)
             DIRT += len(surface)
             Coral = Rectangle(
                 0,
@@ -1213,7 +1359,7 @@ if __name__ == '__main__':
                 WIDTH,
                 surface_h_offset_bottom + 2
             )
-            Draw.rect(Coral, Colors.BACKGROUND_UNDERGROUND)
+            Draw.pixels(Coral, None, Material.DIRT)
             DIRT += Coral.w * Coral.h
 
             MaterialMap[surface] = Material.DIRT
@@ -1222,10 +1368,10 @@ if __name__ == '__main__':
             if not scene_thread_running:
                 return
 
-            # PERLIN FUSION
+            # PERLIN FUSION OF DIRT
             dirt = perlin_fusion(Underground + Cavern, [], 0.7, 0.2, 30, 6)
             dirt_dict = dict.fromkeys(dirt, True)
-            Draw.pixels(dirt, Colors.BACKGROUND_UNDERGROUND)
+            Draw.pixels(dirt, None, Material.DIRT)
             DIRT += len(dirt)
             STONE -= len(dirt)
             MaterialMap[dirt] = Material.DIRT
@@ -1233,16 +1379,17 @@ if __name__ == '__main__':
             if not scene_thread_running:
                 return
 
+            # PERLIN FUSION OF MUD
             mud = perlin_fusion(Underground + Cavern, [], 0.2, 0.2, 40, 3)
             mud_dict = dict.fromkeys(mud, True)
-            Draw.pixels(mud, Colors.MUD)
+            Draw.pixels(mud, None, Material.MUD)
             MUD += len(mud)
             MaterialMap[mud] = Material.MUD
 
             if not scene_thread_running:
                 return
 
-            # CREATE OCEAN
+            # CREATE OCEAN LEFT
             ocean_left_y = grass[0][1]
             ocean_right_y = grass[-1][1]
 
@@ -1261,6 +1408,7 @@ if __name__ == '__main__':
             if not scene_thread_running:
                 return
 
+            # CREATE OCEAN RIGHT
             sand, water = create_ocean(
                 Rectangle(WIDTH - surface_w_offset_right, ocean_right_y,
                           surface_w_offset_right, Surface.h + (Surface.y - ocean_right_y)),
@@ -1287,7 +1435,6 @@ if __name__ == '__main__':
             forbidden_x = []
 
             # CREATE LAKE
-            # heuristics to place lake
             global LAKE_COUNT
             lake_set = find_points_between_slopes(grass, -0.1, .1, 35, 75)
             for _ in range(LAKE_COUNT if len(lake_set) > LAKE_COUNT else len(lake_set)):
@@ -1296,7 +1443,7 @@ if __name__ == '__main__':
                 for x in range(x0, x1):
                     forbidden_x.append(x)
                 w = x1 - x0
-                lake, air = create_lake(grass, x0, w, random.randint(10, 25))
+                lake, air = create_lake(grass, x0, w, random.randint(5, 25))
                 MaterialMap[lake] = Material.WATER
                 MaterialMap[air] = Material.NONE
                 WATER += len(lake)
@@ -1309,7 +1456,7 @@ if __name__ == '__main__':
                 return
 
             # CREATE OCEAN DESERT LEFT
-            sand = create_ocean_desert_left(grass, 100)
+            sand = create_ocean_desert_left(grass, 50)
             Draw.pixels(sand, material=Material.SAND)
             SAND += len(sand)
             MaterialMap[sand] = Material.SAND
@@ -1318,7 +1465,7 @@ if __name__ == '__main__':
                 return
 
             # CREATE OCEAN DESERT RIGHT
-            sand = create_ocean_desert_right(grass, 100)
+            sand = create_ocean_desert_right(grass, 50)
             Draw.pixels(sand, material=Material.SAND)
             SAND += len(sand)
             MaterialMap[sand] = Material.SAND
@@ -1451,15 +1598,15 @@ if __name__ == '__main__':
                 grid = Grid.from_rect(rect, -1)
                 for P1, P2 in zip(points, points[1:]):
                     pixels_outer = dict.fromkeys(
-                        pixels_between((int(P1.x), int(P1.y)), (int(P2.x), int(P2.y)), TUNNEL_PATH_WIDTH_MAX),
-                        True)
+                        pixels_between((int(P1.x), int(P1.y)), (int(P2.x), int(P2.y)), TUNNEL_PATH_WIDTH_MAX)
+                    )
                     for x, y in pixels_outer.keys():
                         grid[x, y] = 0
 
                 for P1, P2 in zip(points, points[1:]):
                     pixels_inner = dict.fromkeys(
-                        pixels_between((int(P1.x), int(P1.y)), (int(P2.x), int(P2.y)), TUNNEL_PATH_WIDTH_MIN),
-                        True)
+                        pixels_between((int(P1.x), int(P1.y)), (int(P2.x), int(P2.y)), TUNNEL_PATH_WIDTH_MIN)
+                    )
                     for x, y in pixels_inner.keys():
                         grid[x, y] = 1
 
@@ -1482,7 +1629,7 @@ if __name__ == '__main__':
                 for step in range(4):
                     grid = cave_cellular_step(grid, 3, 4)
                 tunnel = grid.extract(1)
-                Draw.pixels(tunnel, Colors.DIRT)
+                Draw.pixels(tunnel, None, Material.CAVE_BACKGROUND)
                 MaterialMap[tunnel] = Material.CAVE_BACKGROUND
 
                 # cosmetic lianas
@@ -1510,7 +1657,7 @@ if __name__ == '__main__':
                 global STONE, MaterialMap
                 STONE += len(pixels)
                 MaterialMap[pixels] = Material.STONE
-                Draw.pixels(pixels, Colors.BACKGROUND_CAVERN)
+                Draw.pixels(pixels, None, Material.STONE)
 
             def error1(err):
                 raise err
@@ -1532,7 +1679,7 @@ if __name__ == '__main__':
                 global COPPER, MaterialMap
                 COPPER += len(pixels)
                 MaterialMap[pixels] = Material.COPPER
-                Draw.pixels(pixels, Colors.COPPER)
+                Draw.pixels(pixels, None, Material.COPPER)
 
             def error2(err):
                 raise err
@@ -1591,7 +1738,7 @@ if __name__ == '__main__':
                             else:
                                 STONE -= 1
                         MaterialMap[pixels] = Material.COPPER
-                        Draw.pixels(pixels, Colors.COPPER)
+                        Draw.pixels(pixels, None, Material.COPPER)
 
                     def error1(err):
                         print(err)
@@ -1615,7 +1762,7 @@ if __name__ == '__main__':
                             else:
                                 STONE -= 1
                         MaterialMap[pixels] = Material.GOLD
-                        Draw.pixels(pixels, Colors.GOLD)
+                        Draw.pixels(pixels, None, Material.GOLD)
 
                     def error2(err):
                         print(err)
