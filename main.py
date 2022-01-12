@@ -13,6 +13,8 @@ from noise import pnoise2
 
 WIDTH = 1920
 HEIGHT = 1080
+MAP_WIDTH = 4200
+MAP_HEIGHT = 1200
 HILLS_LEVEL1_COUNT = 1
 HILLS_LEVEL2_COUNT = 2
 HILLS_LEVEL3_COUNT = 2
@@ -410,7 +412,7 @@ def create_convex_polygon(inner: Rectangle, outer: Rectangle, num_of_points: int
 
     if DEBUG:
         for point in points:
-            pygame.draw.circle(Draw.surface, RED, point, 5)
+            pygame.draw.circle(Draw.surface_map, RED, point, 5)
     return points
 
 
@@ -1065,11 +1067,11 @@ def create_lake(surface: PixelArray, at: int, width: int, height: int) -> (Pixel
     return region, removal
 
 
-Space = Rectangle(0, 0, WIDTH, 1 * HEIGHT / 10)
-Surface = Rectangle(0, Space.y + Space.h, WIDTH, 2 * HEIGHT / 10)
-Underground = Rectangle(0, Surface.y + Surface.h, WIDTH, 2 * HEIGHT / 10)
-Cavern = Rectangle(0, Underground.y + Underground.h, WIDTH, 4 * HEIGHT / 10)
-Underworld = Rectangle(0, Cavern.y + Cavern.h, WIDTH, 1 * HEIGHT / 10)
+Space = Rectangle(0, 0, MAP_WIDTH, 1 * MAP_HEIGHT / 10)
+Surface = Rectangle(0, Space.y + Space.h, MAP_WIDTH, 2 * MAP_HEIGHT / 10)
+Underground = Rectangle(0, Surface.y + Surface.h, MAP_WIDTH, 2 * MAP_HEIGHT / 10)
+Cavern = Rectangle(0, Underground.y + Underground.h, MAP_WIDTH, 4 * MAP_HEIGHT / 10)
+Underworld = Rectangle(0, Cavern.y + Cavern.h, MAP_WIDTH, 1 * MAP_HEIGHT / 10)
 
 
 class PixelMaterialColorMap:
@@ -1110,8 +1112,8 @@ class PixelMaterialColorMap:
 
 
 class _MaterialMap:
-    global WIDTH, HEIGHT
-    _array = [Material.NONE for _ in range(WIDTH * HEIGHT)]
+    global MAP_WIDTH, MAP_HEIGHT
+    _array = [Material.NONE for _ in range(MAP_WIDTH * MAP_HEIGHT)]
     _lock = threading.Lock()
 
     def __setitem__(self, key, value):
@@ -1119,25 +1121,25 @@ class _MaterialMap:
         with self._lock:
             if isinstance(key, tuple):
                 x, y = key
-                self._array[y * WIDTH + x] = value
+                self._array[y * MAP_WIDTH + x] = value
             else:
                 for x, y in key:
-                    self._array[y * WIDTH + x] = value
+                    self._array[y * MAP_WIDTH + x] = value
 
     def __getitem__(self, item):
         with self._lock:
             x, y = item
-            return self._array[y * WIDTH + x]
+            return self._array[y * MAP_WIDTH + x]
 
     def __iter__(self):
         with self._lock:
-            return itertools.product(range(0, WIDTH), range(0, HEIGHT))
+            return itertools.product(range(0, MAP_WIDTH), range(0, MAP_HEIGHT))
 
     def grid(self, rect: Rectangle, mapping: Dict[Material, int], default: int):
         grid = Grid.from_rect(rect)
         with self._lock:
             for x, y in grid:
-                key = self._array[y * WIDTH + x]
+                key = self._array[y * MAP_WIDTH + x]
                 if key in mapping:
                     grid[x, y] = mapping[key]
                 else:
@@ -1160,9 +1162,16 @@ if __name__ == '__main__':
         """ Drawing interface """
         pygame.init()
         pygame.font.init()
-        surface = pygame.display.set_mode([WIDTH, HEIGHT])
+        surface = pygame.display.set_mode([WIDTH, HEIGHT], pygame.FULLSCREEN | pygame.DOUBLEBUF, 8)
+        surface_map = pygame.Surface([MAP_WIDTH, MAP_HEIGHT])
+
         font_size = 18
         font = pygame.font.Font("font.ttf", font_size)
+        scale = 1.0
+        pos = [0, 0]
+        c_pos = [0, 0]
+        drag = False
+        clock = pygame.time.Clock()
 
         def __init__(self):
             raise NotImplemented
@@ -1172,27 +1181,51 @@ if __name__ == '__main__':
             global WATER, LAVA, CAVE, DIRT, STONE, MUD, COPPER, GRASS, GOLD
             size = Draw.font_size
 
-            if not Draw.surface.get_locked():
-                pygame.draw.rect(Draw.surface, BLACK, (8, size, 200, 9 * size))
-                Draw.surface.blit(Draw.font.render("WATER: %d" % WATER, True, RED), (8, size))
-                Draw.surface.blit(Draw.font.render("LAVA: %d" % LAVA, True, RED), (8, 2 * size))
-                Draw.surface.blit(Draw.font.render("CAVE: %d" % CAVE, True, RED), (8, 3 * size))
-                Draw.surface.blit(Draw.font.render("DIRT: %d" % DIRT, True, RED), (8, 4 * size))
-                Draw.surface.blit(Draw.font.render("STONE: %d" % STONE, True, RED), (8, 5 * size))
-                Draw.surface.blit(Draw.font.render("MUD: %d" % MUD, True, RED), (8, 6 * size))
-                Draw.surface.blit(Draw.font.render("COPPER: %d" % COPPER, True, RED), (8, 7 * size))
-                Draw.surface.blit(Draw.font.render("GOLD: %d" % GOLD, True, RED), (8, 8 * size))
-                Draw.surface.blit(Draw.font.render("GRASS: %d" % GRASS, True, RED), (8, 9 * size))
+            if not Draw.surface_map.get_locked():
+                pygame.draw.rect(Draw.surface_map, BLACK, (8, size, 200, 9 * size))
+                Draw.surface_map.blit(Draw.font.render("WATER: %d" % WATER, True, RED), (8, size))
+                Draw.surface_map.blit(Draw.font.render("LAVA: %d" % LAVA, True, RED), (8, 2 * size))
+                Draw.surface_map.blit(Draw.font.render("CAVE: %d" % CAVE, True, RED), (8, 3 * size))
+                Draw.surface_map.blit(Draw.font.render("DIRT: %d" % DIRT, True, RED), (8, 4 * size))
+                Draw.surface_map.blit(Draw.font.render("STONE: %d" % STONE, True, RED), (8, 5 * size))
+                Draw.surface_map.blit(Draw.font.render("MUD: %d" % MUD, True, RED), (8, 6 * size))
+                Draw.surface_map.blit(Draw.font.render("COPPER: %d" % COPPER, True, RED), (8, 7 * size))
+                Draw.surface_map.blit(Draw.font.render("GOLD: %d" % GOLD, True, RED), (8, 8 * size))
+                Draw.surface_map.blit(Draw.font.render("GRASS: %d" % GRASS, True, RED), (8, 9 * size))
 
         @staticmethod
         def loop():
+            Draw.clock.tick(25)
             for event in pygame.event.get():
                 if event.type == pygame.QUIT or (event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE):
                     name = ''.join(random.choice(string.ascii_lowercase) for _ in range(10))
-                    pygame.image.save(Draw.surface, "img/" + name + ".png")
+                    pygame.image.save(Draw.surface_map, "img/" + name + ".png")
                     pygame.display.set_mode((1, 1))
                     pygame.display.flip()
                     return False
+                elif event.type == pygame.MOUSEWHEEL:
+                    if event.y > 0:
+                        Draw.scale *= 1.2
+                    else:
+                        Draw.scale *= 0.8
+                elif event.type == pygame.MOUSEBUTTONDOWN:
+                    Draw.drag = True
+                    Draw.c_pos = event.pos
+                elif event.type == pygame.MOUSEBUTTONUP:
+                    Draw.drag = False
+                elif event.type == pygame.MOUSEMOTION and Draw.drag:
+                    x, y = Draw.pos
+                    Draw.pos = [x + (Draw.c_pos[0] - event.pos[0]) * Draw.scale * 0.5,
+                                y + (Draw.c_pos[1] - event.pos[1]) * Draw.scale * 0.5]
+                    Draw.c_pos = event.pos
+
+                elif event.type == pygame.KEYDOWN and event.key == pygame.K_SPACE:
+                    Draw.pos = [0, 0]
+
+            Draw.surface.fill((0, 0, 0))
+            surf = pygame.transform.scale(Draw.surface_map,
+                                          (int(Draw.scale * MAP_WIDTH), int(Draw.scale * MAP_HEIGHT)))
+            Draw.surface.blit(surf, (0, 0), (Draw.pos[0], Draw.pos[1], WIDTH, HEIGHT))
             pygame.display.flip()
             return True
 
@@ -1200,63 +1233,67 @@ if __name__ == '__main__':
         def rect(rect: Rectangle, color: Color = None):
             x, y, x1, y1 = rect.get_rect()
             if color is not None:
-                pygame.draw.rect(Draw.surface, color, (x, y, x1, y1))
+                pygame.draw.rect(Draw.surface_map, color, (x, y, x1, y1))
             else:
                 for x0 in range(x, x1):
                     for y0 in range(y, y1):
                         color = PixelMaterialColorMap.get_color(x0, y0, Material.BACKGROUND)
-                        pygame.draw.rect(Draw.surface, color, (x0, y0, 1, 1))
+                        pygame.draw.rect(Draw.surface_map, color, (x0, y0, 1, 1))
 
         @staticmethod
         def outline(rect: Rectangle, color: Color):
             x, y, x1, y1 = rect.get_rect()
-            pygame.draw.rect(Draw.surface, color, (x, y, x1, y1), 1)
+            pygame.draw.rect(Draw.surface_map, color, (x, y, x1, y1), 1)
 
         @staticmethod
         def pixels(pixels, color: Color = None, material: Material = None):
-            for x, y in pixels:
-                if color is None:
-                    if material is None:
-                        c = PixelMaterialColorMap.get_color(x, y, Material.BACKGROUND)
+            rect = get_bounding_rect(pixels)
+            indicies = dict.fromkeys(pixels, True)
+            rects = []
+            for x in range(rect.x, rect.x + rect.w):
+                ys = []
+                for y in range(rect.y, rect.y + rect.h):
+                    if not (x, y) in indicies:
+                        if len(ys) > 0:
+                            rects.append((x, ys[0], x + 1, ys[-1] + 1))
+                            ys = []
                     else:
-                        c = PixelMaterialColorMap.get_color(x, y, material)
-                    pygame.draw.rect(Draw.surface, c, (x, y, 1, 1))
+                        ys.append(y)
+                if len(ys) > 0:
+                    rects.append((x, ys[0], x + 1, ys[-1] + 1))
+
+            for rect in rects:
+                x, y, x1, y1 = rect
+                if color is None:
+                    current_color = None
+                    ys = []
+                    for y2 in range(y, y1):
+                        if material is None:
+                            c = PixelMaterialColorMap.get_color(x, y2, Material.BACKGROUND)
+                        else:
+                            c = PixelMaterialColorMap.get_color(x, y2, material)
+                        if current_color is None:
+                            ys.append(y2)
+                            current_color = c
+                        elif current_color == c:
+                            ys.append(y2)
+                        else:
+                            pygame.draw.rect(Draw.surface_map, current_color, (x, ys[0], x1 - x, ys[-1] + 1 - ys[0]))
+                            current_color = c
+                            ys = [y2]
+                    if len(ys) > 0:
+                        if current_color is not None:
+                            pygame.draw.rect(Draw.surface_map, current_color, (x, ys[0], x1 - x, ys[-1] + 1 - ys[0]))
                 else:
-                    pygame.draw.rect(Draw.surface, color, (x, y, 1, 1))
+                    pygame.draw.rect(Draw.surface_map, color, (x, y, x1 - x, y1 - y))
 
         @staticmethod
         def line(p0: Tuple[int, int], p1: Tuple[int, int], color: Color, width: int = 5):
-            pygame.draw.line(Draw.surface, color, p0, p1, width)
+            pygame.draw.line(Draw.surface_map, color, p0, p1, width)
 
         @staticmethod
         def polygon(points: Tuple[Tuple[int, int], ...], color: Tuple[int, int, int]):
-            pygame.draw.polygon(Draw.surface, color, points)
-
-            sx = None
-            sy = None
-            bx = None
-            by = None
-            for point in points:
-                x, y = point
-                if sx is None:
-                    sx = x
-                elif sx > x:
-                    sx = x
-
-                if sy is None:
-                    sy = y
-                elif sy > y:
-                    sy = y
-
-                if bx is None:
-                    bx = x
-                elif bx < x:
-                    bx = x
-
-                if by is None:
-                    by = y
-                elif by < y:
-                    by = y
+            pygame.draw.polygon(Draw.surface_map, color, points)
 
 
     class MainScene:
@@ -1264,12 +1301,12 @@ if __name__ == '__main__':
 
         @staticmethod
         def run():
-            global WIDTH, HEIGHT, DEBUG
+            global MAP_WIDTH, MAP_HEIGHT, DEBUG
             global DIRT, MUD, SAND, WATER, LAVA, GRASS, COPPER, STONE
             global MIN_CAVE_REGION_WIDTH, MIN_CAVE_REGION_HEIGHT
             global MaterialMap
 
-            tree = BSPTree(0, Underground.y, WIDTH, Underground.h + Cavern.h)
+            tree = BSPTree(0, Underground.y, MAP_WIDTH, Underground.h + Cavern.h)
             tree.grow(min_width=MIN_CAVE_REGION_WIDTH, min_height=MIN_CAVE_REGION_HEIGHT)
 
             PixelMaterialColorMap.add_rect(Space, {
@@ -1327,9 +1364,9 @@ if __name__ == '__main__':
                         Draw.outline(Rectangle(node.x, node.y, node.w, node.h), RED)
 
             # CREATE SURFACE
-            surface_w_offset_left = 0.075 * WIDTH
-            surface_w_offset_right = 0.075 * WIDTH
-            surface_w = WIDTH - surface_w_offset_right - surface_w_offset_right
+            surface_w_offset_left = 0.075 * MAP_WIDTH
+            surface_w_offset_right = 0.075 * MAP_WIDTH
+            surface_w = MAP_WIDTH - surface_w_offset_right - surface_w_offset_right
             SURFACE_H = Surface.h
             surface_h_offset_bottom = 0.25 * SURFACE_H
             surface_h_offset_top = 0.35 * SURFACE_H
@@ -1356,7 +1393,7 @@ if __name__ == '__main__':
             Coral = Rectangle(
                 0,
                 Space.h + surface_h_offset_top + surface_h - 1,
-                WIDTH,
+                MAP_WIDTH,
                 surface_h_offset_bottom + 2
             )
             Draw.pixels(Coral, None, Material.DIRT)
@@ -1410,7 +1447,7 @@ if __name__ == '__main__':
 
             # CREATE OCEAN RIGHT
             sand, water = create_ocean(
-                Rectangle(WIDTH - surface_w_offset_right, ocean_right_y,
+                Rectangle(MAP_WIDTH - surface_w_offset_right, ocean_right_y,
                           surface_w_offset_right, Surface.h + (Surface.y - ocean_right_y)),
                 False, random.randint(4, 10)
             )
@@ -1663,7 +1700,7 @@ if __name__ == '__main__':
                 raise err
 
             Surf = Rectangle(surface_w_offset_left, Surface.y + Surface.h - surface_h_offset_bottom - 1,
-                             WIDTH - surface_w_offset_right - surface_w_offset_left,
+                             MAP_WIDTH - surface_w_offset_right - surface_w_offset_left,
                              surface_h_offset_bottom + 1)
             surface_grid = Grid.from_pixels(Surface, surface, 0, 1)
             for x, y in Surf:
@@ -1802,7 +1839,6 @@ if __name__ == '__main__':
     scene_thread.start()
     while Draw.loop():
         Draw.count()
-        time.sleep(1 / 25)
     scene_thread_running = False
     scene_thread.join()
     ConcurrentExecutor.terminate()
